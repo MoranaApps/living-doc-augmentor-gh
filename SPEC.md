@@ -68,7 +68,33 @@ The concept originates from the *M5 — Source Code Augmentor (Enrichment)* mile
 
 ## 3. Architecture
 
-┌─────────────────────────────────────────────────────────┐ │ GitHub Action (composite) │ │ │ │ ┌──────────────┐ ┌───────────────────────────────┐ │ │ │ action.yml │───▶│ main.py (Python 3.14 entry) │ │ │ └──────────────┘ └──────────┬────────────────────┘ │ │ │ │ │ ┌────────────┴────────────┐ │ │ ▼ ▼ │ │ ┌──────────────┐ ┌──────────────┐ │ │ │ Augmentor │ │ Collector │ │ │ │ Regime │ │ Regime │ │ │ └──────┬───────┘ └──────┬───────┘ │ │ │ │ │ │ ┌──────────┴──────────┐ │ │ │ ▼ ▼ ▼ │ │ ┌──────────┐ ┌────────────┐ ┌──────────────────┐ │ │ │ PR Mode │ │ Full Scan │ │ JSON Extractor │ │ │ │ (diff) │ │ (repo-wide)│ │ (aggregate all) │ │ │ └──────────┘ └────────────┘ └──────────────────┘ │ │ │ │ ┌─────────────────────────────────────────────────┐ │ │ │ augmentation_types.yml (user-defined rules) │ │ │ └─────────────────────────────────────────────────┘ │ └─────────────────────────────────────────────────────────┘
+```
+┌─────────────────────────────────────────────────────────┐
+│                GitHub Action (composite)                 │
+│                                                         │
+│  ┌──────────────┐   ┌───────────────────────────────┐   │
+│  │  action.yml   │───▶│ main.py (Python 3.14 entry)  │   │
+│  └──────────────┘   └──────────┬────────────────────┘   │
+│                                │                        │
+│                  ┌─────────────┴────────────┐           │
+│                  ▼                          ▼           │
+│         ┌──────────────┐          ┌──────────────┐      │
+│         │  Augmentor   │          │  Collector   │      │
+│         │   Regime     │          │   Regime     │      │
+│         └──────┬───────┘          └──────┬───────┘      │
+│                │                         │              │
+│    ┌───────────┴──────────┐              │              │
+│    ▼                      ▼              ▼              │
+│ ┌──────────┐  ┌────────────┐  ┌──────────────────┐      │
+│ │ PR Mode  │  │ Full Scan  │  │ JSON Extractor   │      │
+│ │  (diff)  │  │(repo-wide) │  │ (aggregate all)  │      │
+│ └──────────┘  └────────────┘  └──────────────────┘      │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │   augmentation_types.yml (user-defined rules)   │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
 
 
 ### Key Components
@@ -207,8 +233,12 @@ types:
       capture_groups:
         - name: page_name
           group: 1
+```
+
+---
 
 ## 6. Comment Format Specification
+
 Annotations are embedded in standard language comment/docstring formats.
 
 ### Python (docstrings)
@@ -239,7 +269,7 @@ def test_user_registration():
 
 ### TypeScript / JavaScript (JSDoc/TSDoc)
 
-```
+```typescript
 /**
  * Handles user registration and authentication.
  *
@@ -266,48 +296,59 @@ class UserService {
 - Annotations are case-sensitive.
 - Unrecognized annotations (not in augmentation_types.yml) are reported as warnings.
 
+---
+
 ## 7. Configuration
 
 ### 7.1 Configuration File
-The action reads configuration from augmentation_types.yml (path configurable via input).
+
+The action reads configuration from `augmentation_types.yml` (path configurable via input).
 
 ### 7.2 Configuration Validation
+
 On startup, the action validates:
 
-YAML syntax is correct.
-All required fields are present for each type.
-Regex patterns compile successfully.
-File glob patterns are valid.
-No duplicate type names or tags.
-Invalid configuration causes exit code 2.
+- YAML syntax is correct.
+- All required fields are present for each type.
+- Regex patterns compile successfully.
+- File glob patterns are valid.
+- No duplicate type names or tags.
+
+Invalid configuration causes exit code `2`.
+
+---
 
 ## 8. Action Inputs & Outputs
 
 ### Inputs
 
-Input	Required	Default	Description
-regime	yes	—	Operating mode: augmentor or collector
-config-path	no	augmentation_types.yml	Path to the augmentation types configuration file
-scan-mode	no	pr	Augmentor scan mode: pr, full, or per-type
-augmentation-type	no	—	When scan-mode: per-type, the specific type to check
-source-paths	no	.	Comma-separated list of directories to scan
-exclude-paths	no	—	Comma-separated list of glob patterns to exclude
-output-path	no	code_augmentations.json	Output file path for the collector regime
-fail-on-violations	no	true	Whether the augmentor should fail the workflow on violations
-verbose	no	false	Enable verbose/debug logging
-python-version	no	3.14	Python version to use
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `regime` | yes | — | Operating mode: `augmentor` or `collector` |
+| `config-path` | no | `augmentation_types.yml` | Path to the augmentation types configuration file |
+| `scan-mode` | no | `pr` | Augmentor scan mode: `pr`, `full`, or `per-type` |
+| `augmentation-type` | no | — | When `scan-mode: per-type`, the specific type to check |
+| `source-paths` | no | `.` | Comma-separated list of directories to scan |
+| `exclude-paths` | no | — | Comma-separated list of glob patterns to exclude |
+| `output-path` | no | `code_augmentations.json` | Output file path for the collector regime |
+| `fail-on-violations` | no | `true` | Whether the augmentor should fail the workflow on violations |
+| `verbose` | no | `false` | Enable verbose/debug logging |
+| `python-version` | no | `3.14` | Python version to use |
 
 ### Outputs
 
-Output	Description
-violations-count	Number of violations found (augmentor regime)
-annotations-count	Total annotations found
-output-file	Path to the generated code_augmentations.json (collector regime)
-types-summary	JSON string summarizing counts per augmentation type
+| Output | Description |
+|---|---|
+| `violations-count` | Number of violations found (augmentor regime) |
+| `annotations-count` | Total annotations found |
+| `output-file` | Path to the generated `code_augmentations.json` (collector regime) |
+| `types-summary` | JSON string summarizing counts per augmentation type |
+
+---
 
 ## 9. Collector Output Schema
 
-The collector produces code_augmentations.json with the following structure:
+The collector produces `code_augmentations.json` with the following structure:
 
 ```json
 {
@@ -398,6 +439,8 @@ The collector produces code_augmentations.json with the following structure:
   ]
 }
 ```
+
+---
 
 ## 10. GitHub Action Definition (action.yml)
 
@@ -490,6 +533,8 @@ runs:
         cd ${{ github.action_path }}
         python main.py
 ```
+
+---
 
 ## 11. Example Workflows
 
@@ -594,22 +639,25 @@ jobs:
           echo "- **Output file:** ${{ steps.collector.outputs.output-file }}" >> $GITHUB_STEP_SUMMARY
 ```
 
+---
+
 ## 12. Quality Gates
 
 Modeled after AbsaOSS/generate-release-notes, the repository enforces the following quality gates:
 
 ### 12.1 CI Workflows
 
-Workflow	Trigger	Description
-Unit Tests	PR, push to main	Run pytest with coverage ≥ 80%
-Integration Tests	PR, push to main	End-to-end tests with sample repositories
-Linting (pylint)	PR, push to main	Pylint score ≥ 9.0/10
-Linting (ruff)	PR, push to main	Zero ruff violations
-Type Checking (mypy)	PR, push to main	Strict mode, zero errors
-Code Formatting (black)	PR, push to main	Zero formatting violations
-Dependency Audit	PR, scheduled	Check for known vulnerabilities
-PR Title Convention	PR	Enforce conventional commit format
-YAML Validation	PR	Validate action.yml and example configs
+| Workflow | Trigger | Description |
+|---|---|---|
+| Unit Tests | PR, push to main | Run pytest with coverage ≥ 80% |
+| Integration Tests | PR, push to main | End-to-end tests with sample repositories |
+| Linting (pylint) | PR, push to main | Pylint score ≥ 9.0/10 |
+| Linting (ruff) | PR, push to main | Zero ruff violations |
+| Type Checking (mypy) | PR, push to main | Strict mode, zero errors |
+| Code Formatting (black) | PR, push to main | Zero formatting violations |
+| Dependency Audit | PR, scheduled | Check for known vulnerabilities |
+| PR Title Convention | PR | Enforce conventional commit format |
+| YAML Validation | PR | Validate action.yml and example configs |
 
 ### 12.2 Branch Protection Rules
 
@@ -620,12 +668,15 @@ YAML Validation	PR	Validate action.yml and example configs
 
 ### 12.3 Configuration Files (modeled after generate-release-notes)
 
-File	Purpose
-.pylintrc	Pylint configuration (see generate-release-notes/.pylintrc)
-pyproject.toml	Project metadata, black/mypy/ruff configuration
-requirements.txt	Runtime dependencies
-requirements-dev.txt	Development/testing dependencies
-renovate.json	Automated dependency updates (see generate-release-notes/renovate.json)
+| File | Purpose |
+|---|---|
+| `.pylintrc` | Pylint configuration (see generate-release-notes/.pylintrc) |
+| `pyproject.toml` | Project metadata, black/mypy/ruff configuration |
+| `requirements.txt` | Runtime dependencies |
+| `requirements-dev.txt` | Development/testing dependencies |
+| `renovate.json` | Automated dependency updates (see generate-release-notes/renovate.json) |.json) |
+
+---
 
 ## 13. Repository Structure
 
@@ -688,6 +739,8 @@ living-doc-augmentor-gh/
 └── SPEC.md                               # → docs/SPEC.md (symlink or copy)
 ```
 
+---
+
 ## 14. Copilot Extensibility
 
 The augmentor detection logic is designed to be extensible by GitHub Copilot:
@@ -707,10 +760,11 @@ class DetectionStrategy(Protocol):
 
 ### 14.2 Built-in Strategies
 
-Strategy	Description
-RegexDetectionStrategy	Pattern-based detection using regex from augmentation_types.yml
-DocstringDetectionStrategy	Python docstring-aware detection (understands docstring boundaries)
-CommentBlockDetectionStrategy	Generic comment block detection (/** */, # ..., <!-- -->)
+| Strategy | Description |
+|---|---|
+| `RegexDetectionStrategy` | Pattern-based detection using regex from `augmentation_types.yml` |
+| `DocstringDetectionStrategy` | Python docstring-aware detection (understands docstring boundaries) |
+| `CommentBlockDetectionStrategy` | Generic comment block detection (`/** */`, `# ...`, `<!-- -->`) |
 
 ### 14.3 Copilot Extension Points
 
@@ -728,45 +782,54 @@ All core modules include:
 - Clear separation of concerns enabling targeted modifications.
 - Well-defined interfaces (Protocol classes) for extensibility.
 
+---
+
 ## 15. Roadmap
 
 ### Phase 1 — Foundation (v0.1.0)
-[ ] Repository scaffolding with quality gates
-[ ] Configuration schema (augmentation_types.yml) and validator
-[ ] Core scanner with regex-based detection
-[ ] Augmentor regime — full scan mode
-[ ] Collector regime — JSON output
-[ ] Unit tests (≥ 80% coverage)
-[ ] action.yml composite action definition
+
+- [ ] Repository scaffolding with quality gates
+- [ ] Configuration schema (`augmentation_types.yml`) and validator
+- [ ] Core scanner with regex-based detection
+- [ ] Augmentor regime — full scan mode
+- [ ] Collector regime — JSON output
+- [ ] Unit tests (≥ 80% coverage)
+- [ ] `action.yml` composite action definition
 
 ### Phase 2 — PR Integration (v0.2.0)
-[ ] PR diff parsing for PR mode
-[ ] GitHub Actions annotations for violations
-[ ] Augmentor PR mode with changed-files-only scanning
-[ ] Integration tests with sample repositories
-[ ] Example workflows for AbsaOSS/generate-release-notes
+
+- [ ] PR diff parsing for PR mode
+- [ ] GitHub Actions annotations for violations
+- [ ] Augmentor PR mode with changed-files-only scanning
+- [ ] Integration tests with sample repositories
+- [ ] Example workflows for AbsaOSS/generate-release-notes
 
 ### Phase 3 — Advanced Features (v0.3.0)
-[ ] Per-type scan mode
-[ ] Multiple detection strategies (docstring-aware, comment-block-aware)
-[ ] Copilot extension point documentation
-[ ] JSON Schema validation for output
-[ ] Summary report in $GITHUB_STEP_SUMMARY
+
+- [ ] Per-type scan mode
+- [ ] Multiple detection strategies (docstring-aware, comment-block-aware)
+- [ ] Copilot extension point documentation
+- [ ] JSON Schema validation for output
+- [ ] Summary report in `$GITHUB_STEP_SUMMARY`
 
 ### Phase 4 — Maturity (v1.0.0)
-[ ] AST-based detection for Python (optional enhancement)
-[ ] Caching for faster incremental scans
-[ ] Configurable severity levels for violations
-[ ] Multi-language support (Python, TypeScript, Java)
-[ ] Published to GitHub Marketplace
+
+- [ ] AST-based detection for Python (optional enhancement)
+- [ ] Caching for faster incremental scans
+- [ ] Configurable severity levels for violations
+- [ ] Multi-language support (Python, TypeScript, Java)
+- [ ] Published to GitHub Marketplace
+
+---
 
 ## Appendix A — Glossary
 
-Term	Definition
-Augmentation	The process of enriching source code with structured annotations for living documentation
-Augmentation Type	A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction
-Annotation	A structured comment/tag in source code following the @LivDoc:<Type>(value) convention
-Augmentor	The regime that validates annotations conform to defined rules
-Collector	The regime that extracts all annotations into structured JSON
-Detection Strategy	A pluggable algorithm for finding annotations in source code
+| Term | Definition |
+|---|---|
+| Augmentation | The process of enriching source code with structured annotations for living documentation |
+| Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
+| Annotation | A structured comment/tag in source code following the `@LivDoc:<Type>(value)` convention |
+| Augmentor | The regime that validates annotations conform to defined rules |
+| Collector | The regime that extracts all annotations into structured JSON |
+| Detection Strategy | A pluggable algorithm for finding annotations in source code |
 
