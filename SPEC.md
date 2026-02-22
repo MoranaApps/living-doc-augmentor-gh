@@ -19,18 +19,20 @@
 7. [Comment Format Specification](#7-comment-format-specification)
 8. [Augmentation Type Catalogue — IT Project Examples](#8-augmentation-type-catalogue--it-project-examples)
 9. [Configuration](#9-configuration)
-10. [Action Inputs & Outputs](#10-action-inputs--outputs)
-11. [Collector Output Schema](#11-collector-output-schema)
-12. [GitHub Action Definition (action.yml)](#12-github-action-definition-actionyml)
-13. [Example Workflows](#13-example-workflows)
-14. [Quality Gates](#14-quality-gates)
-15. [Repository Structure](#15-repository-structure)
-16. [Copilot Integration](#16-copilot-integration)
-17. [Error Reporting & Diagnostics](#17-error-reporting--diagnostics)
-18. [Versioning & Compatibility](#18-versioning--compatibility)
-19. [Security Considerations](#19-security-considerations)
-20. [Performance & Scalability](#20-performance--scalability)
-21. [Roadmap](#21-roadmap)
+10. [Ignore Rules](#10-ignore-rules)
+11. [Action Inputs & Outputs](#11-action-inputs--outputs)
+12. [Collector Output Schema](#12-collector-output-schema)
+13. [GitHub Action Definition (action.yml)](#13-github-action-definition-actionyml)
+14. [Example Workflows](#14-example-workflows)
+15. [Quality Gates](#15-quality-gates)
+16. [Repository Structure](#16-repository-structure)
+17. [AI Assistant Integration](#17-ai-assistant-integration)
+18. [Error Reporting & Diagnostics](#18-error-reporting--diagnostics)
+19. [Versioning & Compatibility](#19-versioning--compatibility)
+20. [Security Considerations](#20-security-considerations)
+21. [Performance & Scalability](#21-performance--scalability)
+22. [Tutorial — Full Augmentation Examples](#22-tutorial--full-augmentation-examples)
+23. [Roadmap](#23-roadmap)
 
 ---
 
@@ -60,15 +62,20 @@ The action operates in two distinct regimes:
 - **G7:** Run augmentor on demand, optionally scoped to a specific augmentation type.
 - **G8:** Produce deterministic, structured JSON output (`code_augmentations.json`) from the collector.
 - **G9:** Maintain strong quality gates (linting, type checking, unit tests, integration tests, code coverage) modeled after [AbsaOSS/generate-release-notes](https://github.com/AbsaOSS/generate-release-notes).
-- **G10:** Provide **first-class GitHub Copilot integration** — including Copilot instructions, agent-mode support, custom chat participants, and AI-assisted annotation authoring.
-- **G11:** Ship a rich **augmentation type catalogue** with ready-to-use examples for common IT project documentation needs (features, requirements, test evidence, API contracts, ADRs, SLAs, ownership, deprecation notices, and more).
+- **G10:** Provide **first-class AI assistant integration** — including Copilot instructions, agent-mode support, custom chat participants, and AI-assisted annotation authoring. Designed to be model-agnostic (GitHub Copilot, Claude, Gemini, etc.).
+- **G11:** Ship a rich **augmentation type catalogue** with ready-to-use examples for common IT project documentation needs (features, requirements, test evidence, API contracts, ADRs, SLAs, ownership, deprecation notices, decisions, glossary, domain objects, project descriptions, and more).
+- **G12:** Support **multiple `augmentation_types.yml` files** to allow separate namespaces and prefixes for different concerns (e.g., one for QA, one for architecture, one for operations).
+- **G13:** Provide **ignore rules** (`@LivDoc:Ignore`) so developers can suppress specific augmentor violations where intentional, preserving user decisions.
+- **G14:** Provide a **tutorial document** with full, multiline augmentation examples for every catalogue type — serving as an onboarding guide.
+- **G15:** Support **cross-language annotation parity** — the same semantic annotation can appear in files of different languages, each requiring language-specific comment patterns while sharing the same augmentation type definition.
 
 ### Non-Goals
 
 - UI rendering of living documentation (handled by upstream consumers).
-- Modifying source code automatically (the augmentor validates; it does not auto-fix).
 - Language-specific AST parsing in v1 (regex/pattern-based detection first; AST is a future enhancement).
 - Replacing dedicated documentation tools (Sphinx, MkDocs, etc.) — this action augments source code, it does not generate final documentation artifacts.
+
+> **Note:** Source code auto-modification (auto-fix of missing annotations) is **not** in scope for the augmentor itself. However, AI assistants (Copilot, Claude, etc.) integrated via §17 can suggest and apply annotations in the developer's editor. The augmentor validates; the AI assistant authors.
 
 ---
 
@@ -145,7 +152,22 @@ The **augmentor** validates that source code annotations conform to the defined 
 - **Behavior:** Scans all matching files for a single augmentation type.
 - **Use case:** Targeted audits (e.g., "check only `@LivDoc:Feature` annotations").
 
-#### 4.1.4 Augmentor Exit Codes
+#### 4.1.4 Augmentor Output
+
+Each augmentor run produces a **structured result** containing:
+
+| Output | Description |
+|---|---|
+| **Violations list** | One entry per violation: file, line, target name, target kind, expected augmentation type, severity, message |
+| **Annotations found** | All valid annotations discovered during the scan (same structure as collector, but scoped to scanned files) |
+| **Ignored locations** | Locations where violations were suppressed by `@LivDoc:Ignore` rules (see §10) |
+| **Summary counts** | Total files scanned, files with violations, violation count by type and severity |
+| **`$GITHUB_STEP_SUMMARY`** | Human-readable report written to the GitHub Actions step summary |
+| **GitHub annotations** | `::error`, `::warning`, `::notice` annotations attached to specific files and lines in the PR |
+
+The augmentor outputs are available as action outputs (see §11) and optionally as a JSON report file.
+
+#### 4.1.5 Augmentor Exit Codes
 
 | Exit Code | Meaning |
 |---|---|
@@ -166,23 +188,99 @@ The **collector** extracts all augmented data from source code into a structured
 
 ## 5. Augmentation Type System
 
-Users define augmentation types in `augmentation_types.yml`. Each type specifies:
+### 5.1 Multiple Configuration Files
 
-| Property | Type | Description |
-|---|---|---|
-| `name` | `string` | Unique identifier (e.g., `Feature`, `AC`, `TestEvidence`) |
-| `tag` | `string` | The annotation tag as it appears in source code (e.g., `@LivDoc:Feature`) |
-| `pattern` | `string` (regex) | Regex pattern to detect the annotation in comments/docstrings |
-| `target` | `enum` | Where the annotation must appear: `function`, `class`, `module`, `method`, `any` |
-| `required` | `boolean` | Whether the annotation is mandatory for matching targets |
-| `file_patterns` | `list[string]` | Glob patterns for files where this type applies (e.g., `["src/**/*.py", "tests/**/*.py"]`) |
-| `description` | `string` | Human-readable description of the annotation type |
-| `extraction_rules` | `object` | Rules for extracting structured data from the annotation body |
-| `severity` | `enum` | Violation severity when this type is missing: `error`, `warning`, `info` (default: `error`) |
-| `multi_value` | `boolean` | Whether the annotation accepts comma-separated values (default: `false`) |
-| `deprecated` | `boolean` | Mark a type as deprecated — still collected but violations are warnings (default: `false`) |
+The action supports **multiple `augmentation_types.yml` files**, each defining its own namespace (prefix). This allows teams to separate concerns:
 
-### Example `augmentation_types.yml`
+```yaml
+# Action input — comma-separated list of config files
+config-path: "livdoc_core.yml,livdoc_qa.yml,livdoc_ops.yml"
+```
+
+Each file defines its own `annotation_prefix`. The prefix is **automatically prepended** to all type names — there is no need to repeat the prefix in each type's `tag` or `pattern`. The action auto-generates the `tag` as `<prefix>:<name>` and the `pattern` as `<prefix>:<name>\(([^)]+)\)`.
+
+### 5.2 Type Properties
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes | Unique identifier within this config file (e.g., `Feature`, `AC`). The full tag is auto-derived as `<prefix>:<name>`. |
+| `target` | `string` | yes | Where the annotation must appear. Built-in values: `function`, `class`, `module`, `method`, `any`. **Custom targets** can be defined in the `languages` section (see §6). |
+| `required` | `boolean` | no | Whether the annotation is mandatory for matching targets (default: `false`) |
+| `file_patterns` | `list[string]` | yes | Glob patterns for files where this type applies |
+| `description` | `string` | no | Human-readable description |
+| `extraction_rules` | `object` | no | Rules for extracting structured data from the annotation body |
+| `severity` | `enum` | no | Violation severity when missing: `error`, `warning`, `info` (default: `error`) |
+| `multi_value` | `boolean` | no | Whether the annotation accepts comma-separated values (default: `false`) |
+| `multiline` | `boolean` | no | Whether the annotation body can span multiple lines (default: `false`) |
+| `deprecated` | `boolean` | no | Mark as deprecated — still collected but violations become warnings (default: `false`) |
+| `target_document` | `string` | no | The intended downstream document this annotation feeds (e.g., `Technical Design`, `Test Report`, `API Reference`) |
+| `audience` | `enum` | no | Primary audience: `technical`, `business`, `qa`, `architecture`, `operations`, `security` |
+| `pattern` | `string` (regex) | no | **Override** — custom regex if the auto-generated pattern is insufficient |
+
+### 5.3 Annotation Placement — Inside vs. Outside the Object
+
+Annotations are always detected in the **comment block immediately preceding or inside** the target code construct:
+
+- **Inside (docstring):** The annotation is inside the object's own docstring (Python `"""`, Javadoc `/** */`). This is the **preferred** placement.
+- **Preceding (comment above):** The annotation is in a comment block directly above the object declaration (e.g., `# @LivDoc:Feature(F-1)` above a Python class, or `// @LivDoc:Feature(F-1)` above a TypeScript class).
+
+For compact constructs (e.g., Scala one-line classes, TypeScript type aliases), the preceding-comment form is the only option:
+
+```scala
+// @LivDoc:DomainEvent(OrderPlaced)
+case class OrderPlaced(orderId: String, timestamp: Instant)
+```
+
+The scanner considers a comment block to be **associated** with a target if there are **zero blank lines** between the comment's last line and the target's declaration line.
+
+### 5.4 Cross-Language Parity
+
+The same augmentation type can appear in files of different languages. The type definition is language-agnostic; only the **comment delimiters** and **target detection patterns** differ per language (configured in §6). This means:
+
+- A `Feature` annotation in `src/service.py` uses `""" @LivDoc:Feature(F-1) """`.
+- The same `Feature` annotation in `src/service.ts` uses `/** @LivDoc:Feature(F-1) */`.
+- The same `Feature` annotation in `infra/main.tf` uses `# @LivDoc:Feature(F-1)`.
+
+Both are validated identically by the augmentor and produce identical collector output.
+
+### 5.5 Multi-Value Annotations — Documentation Fragments in Place
+
+The `multi_value: true` property allows a single annotation to carry multiple comma-separated values. The design intent is to **keep documentation fragments as close as possible to the code they describe** — co-locating metadata with its reason-of-existence:
+
+```python
+def place_order(self, cart: Cart) -> Order:
+    """
+    @LivDoc:AC(AC-ORD-001, AC-ORD-002, AC-ORD-003)
+    """
+    ...
+```
+
+Rather than maintaining a separate mapping file, the developer declares all related identifiers inline.
+
+### 5.6 Multiline Annotations
+
+When `multiline: true`, the annotation body can span multiple lines. The body starts after the opening `(` and ends at the matching `)`. This is useful for types that carry longer documentation fragments:
+
+```python
+class OrderService:
+    """
+    @LivDoc:Decision(
+        type=technology,
+        title=Use PostgreSQL for order storage,
+        rationale=ACID compliance required for financial transactions,
+        date=2026-01-15,
+        status=accepted
+    )
+    @LivDoc:Glossary(
+        term=Order,
+        definition=A confirmed purchase request containing one or more
+            line items with quantities and prices
+    )
+    """
+    ...
+```
+
+### 5.7 Example Configuration
 
 ```yaml
 version: "1.0"
@@ -191,59 +289,83 @@ annotation_prefix: "@LivDoc"
 
 types:
   - name: Feature
-    tag: "@LivDoc:Feature"
-    pattern: '@LivDoc:Feature\(([^)]+)\)'
     target: class
     required: true
     file_patterns:
       - "src/**/*.py"
     description: "Links a class to a feature identifier from the feature registry."
+    target_document: "Feature Matrix"
+    audience: business
     extraction_rules:
       capture_groups:
         - name: feature_id
           group: 1
 
   - name: AC
-    tag: "@LivDoc:AC"
-    pattern: '@LivDoc:AC\(([^)]+)\)'
     target: method
     required: false
     multi_value: true
     file_patterns:
       - "src/**/*.py"
       - "tests/**/*.py"
-    description: "Links a method to an acceptance criterion."
-    extraction_rules:
-      capture_groups:
-        - name: ac_id
-          group: 1
+    description: "Links a method to acceptance criteria."
+    target_document: "Acceptance Criteria Report"
+    audience: qa
 
   - name: TestEvidence
-    tag: "@LivDoc:TestEvidence"
-    pattern: '@LivDoc:TestEvidence\(([^)]+)\)'
     target: function
     required: true
     file_patterns:
       - "tests/**/*.py"
     description: "Links a test function to the requirement it verifies."
-    extraction_rules:
-      capture_groups:
-        - name: requirement_id
-          group: 1
+    target_document: "Test Traceability Matrix"
+    audience: qa
 
-  - name: PageObject
-    tag: "@LivDoc:PageObject"
-    pattern: '@LivDoc:PageObject\(([^)]+)\)'
+  - name: Decision
+    target: class
+    required: false
+    multiline: true
+    file_patterns:
+      - "src/**/*.py"
+      - "src/**/*.ts"
+    description: "Records a technology, library, or business decision in-place."
+    target_document: "Decision Log"
+    audience: architecture
+
+  - name: Glossary
+    target: class
+    required: false
+    multiline: true
+    file_patterns:
+      - "src/**/*.py"
+    description: "Defines a domain term at the point where the concept is implemented."
+    target_document: "Domain Glossary"
+    audience: business
+
+  - name: DomainObject
     target: class
     required: false
     file_patterns:
-      - "tests/pages/**/*.py"
-    description: "Marks a class as a page object for UI testing."
-    extraction_rules:
-      capture_groups:
-        - name: page_name
-          group: 1
+      - "src/domain/**/*.py"
+      - "src/models/**/*.py"
+    description: "Marks a class as a domain object with its bounded context."
+    target_document: "Domain Model"
+    audience: architecture
+
+  - name: ProjectDescription
+    target: module
+    required: false
+    multiline: true
+    file_patterns:
+      - "README.md"
+      - "docs/**/*.md"
+      - "**/__init__.py"
+    description: "Captures high-level project or module description for living documentation."
+    target_document: "Project Overview"
+    audience: business
 ```
+
+> **Note:** The `tag` and `pattern` fields are **not present** — they are auto-derived from `annotation_prefix` + `name`. If a type needs a non-standard pattern (e.g., multiline with key-value syntax), provide an explicit `pattern` override.
 
 ---
 
@@ -285,27 +407,47 @@ file_patterns:
 
 #### Layer 2 — Code Structure Targets
 
-The `target` property scopes annotations to specific code constructs:
+The `target` property scopes annotations to specific code constructs. Built-in targets provide common defaults, but **targets are fully customizable** per language. Users can define any target name and provide a regex pattern for it — the system imposes no fixed enum:
 
-| Target | Description | Detection Method |
+| Built-in Target | Description | Default Detection |
 |---|---|---|
-| `class` | Class / interface definitions | Regex: `^(class\|interface\|struct)\s+\w+` (language-configurable) |
-| `function` | Top-level functions | Regex: `^(def\|function\|func\|fn)\s+\w+` |
+| `class` | Class / interface / struct definitions | `^(class\|interface\|struct)\s+\w+` |
+| `function` | Top-level functions | `^(def\|function\|func\|fn)\s+\w+` |
 | `method` | Methods inside a class | Indented function definitions within class scope |
 | `module` | File/module-level (top of file) | First comment block in the file |
 | `any` | Any comment block, anywhere | No structural constraint |
-| `constructor` | Constructor / initializer | Language-specific patterns (`__init__`, `constructor`, etc.) |
-| `decorator` | Decorated functions/classes | Presence of decorator syntax above the target |
+| `constructor` | Constructor / initializer | `__init__`, `constructor`, etc. |
+| `decorator` | Decorated functions/classes | Decorator syntax above the target |
 | `endpoint` | REST/GraphQL endpoint handlers | Route decorator or annotation patterns |
+
+**Custom targets** — users can add any target name with a regex:
+
+```yaml
+languages:
+  terraform:
+    targets:
+      resource: '^\s*resource\s+"(\w+)"\s+"(\w+)"'
+      data_source: '^\s*data\s+"(\w+)"\s+"(\w+)"'
+      variable: '^\s*variable\s+"(\w+)"'
+      output: '^\s*output\s+"(\w+)"'
+      module_block: '^\s*module\s+"(\w+)"'
+  scala:
+    targets:
+      case_class: '^\s*case\s+class\s+(\w+)'
+      object: '^\s*(case\s+)?object\s+(\w+)'
+      trait: '^\s*(sealed\s+)?trait\s+(\w+)'
+      val: '^\s*(lazy\s+)?val\s+(\w+)'
+```
 
 Target patterns are configured per language in a `languages` section:
 
 ```yaml
 languages:
   python:
+    extensions: [".py"]
     comment_styles:
-      - docstring: '"""'           # Triple-quote docstrings
-      - hash: "#"                  # Hash-line comments
+      - docstring: '"""'
+      - hash: "#"
     targets:
       class: '^\s*class\s+(\w+)'
       function: '^\s*def\s+(\w+)'
@@ -316,6 +458,7 @@ languages:
       endpoint: '^\s*@(app|router)\.(get|post|put|delete|patch)'
 
   typescript:
+    extensions: [".ts", ".tsx"]
     comment_styles:
       - jsdoc: '/** */'
       - line: '//'
@@ -326,8 +469,11 @@ languages:
       module: '__file_header__'
       constructor: '^\s+constructor\s*\('
       endpoint: '^\s*@(Get|Post|Put|Delete|Patch)\('
+      type_alias: '^\s*(export\s+)?type\s+(\w+)\s*='
+      interface: '^\s*(export\s+)?interface\s+(\w+)'
 
   java:
+    extensions: [".java"]
     comment_styles:
       - javadoc: '/** */'
       - line: '//'
@@ -337,7 +483,98 @@ languages:
       module: '__file_header__'
       constructor: '^\s*(public|protected|private)?\s+(\w+)\s*\(.*\)\s*\{'
       endpoint: '^\s*@(Get|Post|Put|Delete|Patch)Mapping'
+      interface: '^\s*(public\s+)?interface\s+(\w+)'
+
+  scala:
+    extensions: [".scala", ".sc"]
+    comment_styles:
+      - scaladoc: '/** */'
+      - line: '//'
+    targets:
+      class: '^\s*(case\s+)?class\s+(\w+)'
+      object: '^\s*(case\s+)?object\s+(\w+)'
+      trait: '^\s*(sealed\s+)?trait\s+(\w+)'
+      function: '^\s*def\s+(\w+)'
+      module: '__file_header__'
+      val: '^\s*(lazy\s+)?val\s+(\w+)'
+
+  terraform:
+    extensions: [".tf"]
+    comment_styles:
+      - hash: "#"
+      - block: '/* */'
+    targets:
+      resource: '^\s*resource\s+"(\w+)"\s+"(\w+)"'
+      data_source: '^\s*data\s+"(\w+)"\s+"(\w+)"'
+      variable: '^\s*variable\s+"(\w+)"'
+      output: '^\s*output\s+"(\w+)"'
+      module_block: '^\s*module\s+"(\w+)"'
+
+  html:
+    extensions: [".html", ".htm", ".svg"]
+    comment_styles:
+      - xml: '<!-- -->'
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  xml:
+    extensions: [".xml", ".xsd", ".wsdl", ".pom"]
+    comment_styles:
+      - xml: '<!-- -->'
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  markdown:
+    extensions: [".md", ".mdx"]
+    comment_styles:
+      - html: '<!-- -->'
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  text:
+    extensions: [".txt", ".csv", ".log"]
+    comment_styles:
+      - hash: "#"
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  yaml:
+    extensions: [".yml", ".yaml"]
+    comment_styles:
+      - hash: "#"
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  shell:
+    extensions: [".sh", ".bash", ".zsh"]
+    comment_styles:
+      - hash: "#"
+    targets:
+      function: '^\s*(function\s+)?(\w+)\s*\(\s*\)'
+      module: '__file_header__'
+
+  sql:
+    extensions: [".sql"]
+    comment_styles:
+      - line: '--'
+      - block: '/* */'
+    targets:
+      module: '__file_header__'
+      any: '__any__'
+
+  glue_job:
+    extensions: [".py"]         # AWS Glue jobs are Python, but may need custom targets
+    inherits: python             # Inherit Python defaults, override selectively
+    targets:
+      job_entry: '^\s*def\s+(main|run|process)\s*\('
 ```
+
+> **Extensibility guarantee:** The `target` field is a free-form string matched against the `languages.<lang>.targets` map. Adding a new target requires only a new entry in the YAML — no code changes.
 
 #### Layer 3 — Comment Style Awareness
 
@@ -346,11 +583,12 @@ The scanner understands different comment styles per language:
 | Style | Languages | Example |
 |---|---|---|
 | Docstring (`"""`) | Python | `"""@LivDoc:Feature(F-1)"""` |
-| JSDoc / Javadoc (`/** */`) | TypeScript, JavaScript, Java, C# | `/** @LivDoc:Feature(F-1) */` |
-| Hash (`#`) | Python, Ruby, YAML, Shell | `# @LivDoc:Feature(F-1)` |
-| Line (`//`) | TypeScript, JavaScript, Java, Go, Rust, C# | `// @LivDoc:Feature(F-1)` |
-| Block (`/* */`) | C, C++, Go, CSS | `/* @LivDoc:Feature(F-1) */` |
-| XML (`<!-- -->`) | HTML, XML, SVG | `<!-- @LivDoc:Feature(F-1) -->` |
+| JSDoc / Javadoc / Scaladoc (`/** */`) | TypeScript, JavaScript, Java, C#, Scala | `/** @LivDoc:Feature(F-1) */` |
+| Hash (`#`) | Python, Ruby, YAML, Shell, Terraform | `# @LivDoc:Feature(F-1)` |
+| Line (`//`) | TypeScript, JavaScript, Java, Go, Rust, C#, Scala | `// @LivDoc:Feature(F-1)` |
+| Block (`/* */`) | C, C++, Go, CSS, Terraform, SQL | `/* @LivDoc:Feature(F-1) */` |
+| XML (`<!-- -->`) | HTML, XML, SVG, Markdown | `<!-- @LivDoc:Feature(F-1) -->` |
+| SQL line (`--`) | SQL | `-- @LivDoc:Feature(F-1)` |
 
 ### 6.3 Custom Location Matchers
 
@@ -469,12 +707,150 @@ public class PaymentService {
 
 ### General Rules
 
-- Annotations MUST appear inside comment blocks (docstrings, `/** */`, `# comments`).
+- Annotations MUST appear inside comment blocks (docstrings, `/** */`, `# comments`, `<!-- -->`, `--`).
+- The annotation comment block must be **immediately preceding** (zero blank lines before) or **inside** the target construct.
+- For single-line constructs (Scala `case class`, TypeScript `type`, etc.), the preceding-comment form is required.
 - Multiple annotations per comment block are allowed.
 - Annotations with multiple values use comma separation: `@LivDoc:AC(AC-001, AC-002)`.
+- Multiline annotations (when `multiline: true`) span from `(` to the matching `)` across lines.
 - Annotations are case-sensitive.
-- Unrecognized annotations (not in `augmentation_types.yml`) are reported as warnings.
-- Annotations can optionally carry key-value metadata: `@LivDoc:SLA(latency-p99, 200ms)`.
+- Unrecognized annotations (not in any loaded config) are reported as warnings.
+- Annotations can carry key-value metadata: `@LivDoc:SLA(latency-p99, 200ms)`.
+- Annotations do **not** replace inner code documentation links (e.g., Gherkin step references in test code remain as-is; the annotation adds traceability metadata alongside them).
+
+### Scala
+
+```scala
+/**
+ * Order aggregate root.
+ *
+ * @LivDoc:Aggregate(Order)
+ * @LivDoc:BoundedContext(OrderManagement)
+ * @LivDoc:Feature(ORD-001)
+ */
+class Order(val id: OrderId, val items: List[LineItem]) {
+  /**
+   * @LivDoc:AC(AC-ORD-001)
+   * @LivDoc:DomainEvent(OrderPlaced)
+   */
+  def place(): OrderPlaced = ???
+}
+
+// @LivDoc:DomainEvent(OrderPlaced)
+case class OrderPlaced(orderId: String, timestamp: Instant)
+
+// @LivDoc:Glossary(term=Line Item, definition=A single product entry with quantity in an order)
+case class LineItem(product: Product, quantity: Int)
+```
+
+### Terraform
+
+```hcl
+# @LivDoc:Feature(INFRA-VPC-001)
+# @LivDoc:Owner(team-platform)
+# @LivDoc:Decision(
+#   type=technology,
+#   title=Use AWS VPC with private subnets,
+#   rationale=Security requirement for PCI-DSS compliance,
+#   date=2026-01-10,
+#   status=accepted
+# )
+resource "aws_vpc" "main" {
+  cidr_block = "10.0.0.0/16"
+}
+
+# @LivDoc:Tier(tier-1)
+# @LivDoc:SLA(availability, 99.95%)
+resource "aws_rds_instance" "orders_db" {
+  engine         = "postgres"
+  instance_class = "db.r6g.xlarge"
+}
+```
+
+### HTML / Markdown
+
+```html
+<!-- @LivDoc:ProjectDescription(
+  name=Order Management UI,
+  purpose=Customer-facing order placement and tracking interface,
+  team=team-frontend
+) -->
+<!DOCTYPE html>
+<html>
+  ...
+</html>
+```
+
+```markdown
+<!-- @LivDoc:ProjectDescription(
+  name=Living Doc Augmentor,
+  purpose=GitHub Action for structured source code annotations,
+  version=0.1.0
+) -->
+# Living Documentation Augmentor
+...
+```
+
+### AWS Glue Job (Python)
+
+```python
+"""
+ETL job: Transform raw orders into analytics-ready format.
+
+@LivDoc:Feature(ANALYTICS-001)
+@LivDoc:Owner(team-data)
+@LivDoc:Tier(tier-2)
+@LivDoc:Decision(
+    type=technology,
+    title=Use Glue Spark for order ETL,
+    rationale=Native AWS integration with S3 and Redshift,
+    date=2026-02-01,
+    status=accepted
+)
+"""
+def main():
+    ...
+```
+
+### Multiline Annotation Examples
+
+When `multiline: true` is set on a type, the annotation body spans from `(` to `)` across lines:
+
+```python
+class PaymentProcessor:
+    """
+    @LivDoc:Decision(
+        type=library,
+        title=Use Stripe SDK for payment processing,
+        rationale=Best-in-class API reliability and PCI compliance,
+        alternatives=Adyen\, Braintree,
+        date=2026-01-20,
+        status=accepted
+    )
+    @LivDoc:Glossary(
+        term=Payment Processor,
+        definition=A service that handles the authorization and capture
+            of payment transactions through external payment gateways
+    )
+    @LivDoc:DomainObject(PaymentProcessor)
+    """
+    ...
+```
+
+```typescript
+/**
+ * @LivDoc:Decision(
+ *   type=business,
+ *   title=Support only EUR and USD currencies,
+ *   rationale=Initial market scope limited to EU and US,
+ *   date=2026-02-01,
+ *   status=accepted
+ * )
+ */
+class CurrencyService {
+    ...
+}
+```
 
 ---
 
@@ -484,13 +860,13 @@ This section provides a comprehensive catalogue of augmentation types commonly n
 
 ### 8.1 Requirements & Traceability
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **Feature** | `@LivDoc:Feature(ID)` | `class` | Links code to a feature in the feature registry / backlog |
-| **UserStory** | `@LivDoc:UserStory(ID)` | `class`, `method` | Traces code to a user story (e.g., Jira, Azure DevOps) |
-| **Requirement** | `@LivDoc:Requirement(ID)` | `any` | Links to a formal requirement (e.g., DOORS, ReqIF) |
-| **AC** | `@LivDoc:AC(ID, ...)` | `method` | Maps to acceptance criteria — supports multiple values |
-| **Epic** | `@LivDoc:Epic(ID)` | `module`, `class` | Groups code under a high-level epic |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Feature** | `@LivDoc:Feature(ID)` | `class` | Feature Matrix | Business | Links code to a feature in the feature registry / backlog |
+| **UserStory** | `@LivDoc:UserStory(ID)` | `class`, `method` | User Story Map | Business | Traces code to a user story (e.g., Jira, Azure DevOps) |
+| **Requirement** | `@LivDoc:Requirement(ID)` | `any` | Requirements Traceability Matrix | Business | Links to a formal requirement (e.g., DOORS, ReqIF) |
+| **AC** | `@LivDoc:AC(ID, ...)` | `method` | Acceptance Criteria Report | QA | Maps to acceptance criteria — supports multiple values |
+| **Epic** | `@LivDoc:Epic(ID)` | `module`, `class` | Epic Overview | Business | Groups code under a high-level epic |
 
 **Example:**
 
@@ -516,13 +892,13 @@ class OrderService:
 
 ### 8.2 Testing & Quality Evidence
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **TestEvidence** | `@LivDoc:TestEvidence(REQ-ID)` | `function` | Links a test to the requirement it verifies |
-| **TestCategory** | `@LivDoc:TestCategory(category)` | `class`, `function` | Classifies tests: `unit`, `integration`, `e2e`, `performance`, `security` |
-| **PageObject** | `@LivDoc:PageObject(name)` | `class` | Marks a class as a UI page object |
-| **TestData** | `@LivDoc:TestData(fixture)` | `function` | Documents the test data/fixture a test relies on |
-| **CoverageExclusion** | `@LivDoc:CoverageExclusion(reason)` | `function`, `class` | Documents why a piece of code is excluded from coverage |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **TestEvidence** | `@LivDoc:TestEvidence(REQ-ID)` | `function` | Test Traceability Matrix | QA | Links a test to the requirement it verifies |
+| **TestCategory** | `@LivDoc:TestCategory(category)` | `class`, `function` | Test Report | QA | Classifies tests: `unit`, `integration`, `e2e`, `performance`, `security` |
+| **PageObject** | `@LivDoc:PageObject(name)` | `class` | Page Object Catalogue / BDD Keyword Reference | QA | Marks a class as a UI page object — see BDD keyword catalogue below |
+| **TestData** | `@LivDoc:TestData(fixture)` | `function` | Test Data Inventory | QA | Documents the test data/fixture a test relies on |
+| **CoverageExclusion** | `@LivDoc:CoverageExclusion(reason)` | `function`, `class` | Coverage Report | QA | Documents why code is excluded from coverage |
 
 **Example:**
 
@@ -542,15 +918,56 @@ class TestOrderPlacement:
         ...
 ```
 
+#### BDD Keyword Catalogue per PageObject
+
+The `PageObject` annotation type is particularly valuable for creating a living **BDD keyword catalogue**. Each PageObject class documents its available actions (keywords) that can be used in Gherkin scenarios:
+
+```python
+class LoginPage:
+    """
+    Page object for the login screen.
+
+    @LivDoc:PageObject(LoginPage)
+    @LivDoc:BoundedContext(Authentication)
+    @LivDoc:Feature(AUTH-001)
+    """
+
+    def enter_username(self, username: str):
+        """
+        @LivDoc:BDDStep(When the user enters username {username})
+        """
+        self.username_field.send_keys(username)
+
+    def enter_password(self, password: str):
+        """
+        @LivDoc:BDDStep(And the user enters password {password})
+        """
+        self.password_field.send_keys(password)
+
+    def click_login(self):
+        """
+        @LivDoc:BDDStep(And the user clicks the login button)
+        """
+        self.login_button.click()
+
+    def verify_error_message(self, expected: str):
+        """
+        @LivDoc:BDDStep(Then the error message {expected} is displayed)
+        """
+        assert self.error_label.text == expected
+```
+
+The collector extracts this into a structured BDD keyword catalogue — each PageObject becomes a keyword group with its available actions, suitable for generating a living test dictionary.
+
 ### 8.3 Architecture & Design Decisions
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **ADR** | `@LivDoc:ADR(ID)` | `class`, `module` | Links code to an Architecture Decision Record |
-| **DesignPattern** | `@LivDoc:DesignPattern(name)` | `class` | Documents the design pattern implemented (e.g., `Repository`, `Strategy`, `Observer`) |
-| **BoundedContext** | `@LivDoc:BoundedContext(name)` | `module`, `class` | DDD bounded context assignment |
-| **Aggregate** | `@LivDoc:Aggregate(name)` | `class` | Marks an aggregate root in DDD |
-| **DomainEvent** | `@LivDoc:DomainEvent(name)` | `class` | Marks a domain event class |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **ADR** | `@LivDoc:ADR(ID)` | `class`, `module` | Architecture Decision Log | Architecture | Links code to an Architecture Decision Record |
+| **DesignPattern** | `@LivDoc:DesignPattern(name)` | `class` | Technical Design Document | Technical | Documents the design pattern implemented |
+| **BoundedContext** | `@LivDoc:BoundedContext(name)` | `module`, `class` | Domain Model Map | Architecture | DDD bounded context assignment |
+| **Aggregate** | `@LivDoc:Aggregate(name)` | `class` | Domain Model | Architecture | Marks an aggregate root in DDD |
+| **DomainEvent** | `@LivDoc:DomainEvent(name)` | `class` | Event Catalogue | Architecture | Marks a domain event class |
 
 **Example:**
 
@@ -568,12 +985,12 @@ class OrderRepository:
 
 ### 8.4 API & Contract Documentation
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **APIContract** | `@LivDoc:APIContract(ID)` | `endpoint`, `function` | Links an endpoint to its API contract / OpenAPI operationId |
-| **APIVersion** | `@LivDoc:APIVersion(version)` | `class`, `module` | Documents the API version a component belongs to |
-| **EventSchema** | `@LivDoc:EventSchema(ID)` | `class` | Links a class to an async event schema (Kafka, RabbitMQ) |
-| **GraphQLType** | `@LivDoc:GraphQLType(name)` | `class` | Maps a class to a GraphQL type definition |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **APIContract** | `@LivDoc:APIContract(ID)` | `endpoint`, `function` | API Reference | Technical | Links an endpoint to its API contract / OpenAPI operationId |
+| **APIVersion** | `@LivDoc:APIVersion(version)` | `class`, `module` | API Version Matrix | Technical | Documents the API version a component belongs to |
+| **EventSchema** | `@LivDoc:EventSchema(ID)` | `class` | Event Schema Registry | Architecture | Links a class to an async event schema (Kafka, RabbitMQ) |
+| **GraphQLType** | `@LivDoc:GraphQLType(name)` | `class` | GraphQL Schema Docs | Technical | Maps a class to a GraphQL type definition |
 
 **Example:**
 
@@ -592,13 +1009,13 @@ async def create_order(request: CreateOrderRequest) -> OrderResponse:
 
 ### 8.5 Ownership & Operational Metadata
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **Owner** | `@LivDoc:Owner(team)` | `module`, `class` | Assigns code ownership to a team |
-| **SLA** | `@LivDoc:SLA(metric, target)` | `function`, `endpoint` | Documents SLA expectations (latency, uptime, etc.) |
-| **Runbook** | `@LivDoc:Runbook(URL)` | `class`, `module` | Links to the operational runbook |
-| **AlertRule** | `@LivDoc:AlertRule(ID)` | `function` | Links to a monitoring alert rule |
-| **Tier** | `@LivDoc:Tier(level)` | `module`, `class` | Service criticality tier (`tier-1`, `tier-2`, `tier-3`) |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Owner** | `@LivDoc:Owner(team)` | `module`, `class` | Service Ownership Map | Operations | Assigns code ownership to a team |
+| **SLA** | `@LivDoc:SLA(metric, target)` | `function`, `endpoint` | SLA Dashboard | Operations | Documents SLA expectations (latency, uptime) |
+| **Runbook** | `@LivDoc:Runbook(URL)` | `class`, `module` | Runbook Index | Operations | Links to the operational runbook |
+| **AlertRule** | `@LivDoc:AlertRule(ID)` | `function` | Alert Catalogue | Operations | Links to a monitoring alert rule |
+| **Tier** | `@LivDoc:Tier(level)` | `module`, `class` | Service Tier Map | Operations | Service criticality tier |
 
 **Example:**
 
@@ -623,12 +1040,12 @@ class PaymentGateway:
 
 ### 8.6 Lifecycle & Deprecation
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **Deprecated** | `@LivDoc:Deprecated(reason, replacement)` | `any` | Marks code as deprecated with migration guidance |
-| **Since** | `@LivDoc:Since(version)` | `any` | Records the version when a component was introduced |
-| **PlannedRemoval** | `@LivDoc:PlannedRemoval(version)` | `any` | Scheduled removal version |
-| **MigrationGuide** | `@LivDoc:MigrationGuide(URL)` | `class`, `module` | Links to migration instructions |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Deprecated** | `@LivDoc:Deprecated(reason, replacement)` | `any` | Deprecation Report | Technical | Marks code as deprecated with migration guidance |
+| **Since** | `@LivDoc:Since(version)` | `any` | Changelog | Technical | Records the version when a component was introduced |
+| **PlannedRemoval** | `@LivDoc:PlannedRemoval(version)` | `any` | Deprecation Report | Technical | Scheduled removal version |
+| **MigrationGuide** | `@LivDoc:MigrationGuide(URL)` | `class`, `module` | Migration Guide | Technical | Links to migration instructions |
 
 **Example:**
 
@@ -647,12 +1064,12 @@ def get_user_legacy(user_id: int) -> dict:
 
 ### 8.7 Security & Compliance
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **SecurityControl** | `@LivDoc:SecurityControl(ID)` | `class`, `function` | Maps to a security control (e.g., OWASP, SOC2) |
-| **DataClassification** | `@LivDoc:DataClassification(level)` | `class`, `module` | Data sensitivity: `public`, `internal`, `confidential`, `restricted` |
-| **ComplianceRule** | `@LivDoc:ComplianceRule(ID)` | `any` | Links to a compliance requirement (GDPR, HIPAA, PCI-DSS) |
-| **ThreatModel** | `@LivDoc:ThreatModel(ID)` | `class`, `module` | Links to a threat model entry |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **SecurityControl** | `@LivDoc:SecurityControl(ID)` | `class`, `function` | Security Controls Matrix | Security | Maps to a security control (OWASP, SOC2) |
+| **DataClassification** | `@LivDoc:DataClassification(level)` | `class`, `module` | Data Classification Inventory | Security | Data sensitivity level |
+| **ComplianceRule** | `@LivDoc:ComplianceRule(ID)` | `any` | Compliance Report | Security | Links to compliance requirement (GDPR, HIPAA, PCI-DSS) |
+| **ThreatModel** | `@LivDoc:ThreatModel(ID)` | `class`, `module` | Threat Model | Security | Links to a threat model entry |
 
 **Example:**
 
@@ -673,12 +1090,14 @@ class UserDataStore:
 
 These types are specifically designed for integration with living documentation systems (Cucumber Living Doc, Serenity BDD, Pickles, SpecFlow+LivingDoc, etc.):
 
-| Type | Tag | Target | Purpose |
-|---|---|---|---|
-| **GherkinScenario** | `@LivDoc:GherkinScenario(feature:scenario)` | `function` | Links test code to a Gherkin scenario |
-| **GherkinFeature** | `@LivDoc:GherkinFeature(feature-file)` | `class`, `module` | Links implementation to a `.feature` file |
-| **BDDStep** | `@LivDoc:BDDStep(step-pattern)` | `function` | Documents a step definition for BDD frameworks |
-| **SpecFlowBinding** | `@LivDoc:SpecFlowBinding(step)` | `method` | Links a SpecFlow step binding |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **GherkinScenario** | `@LivDoc:GherkinScenario(feature:scenario)` | `function` | Living Doc Report | QA | Links test code to a Gherkin scenario |
+| **GherkinFeature** | `@LivDoc:GherkinFeature(feature-file)` | `class`, `module` | Living Doc Report | QA | Links implementation to a `.feature` file |
+| **BDDStep** | `@LivDoc:BDDStep(step-pattern)` | `function` | BDD Keyword Catalogue | QA | Documents a step definition for BDD frameworks |
+| **SpecFlowBinding** | `@LivDoc:SpecFlowBinding(step)` | `method` | SpecFlow Living Doc | QA | Links a SpecFlow step binding |
+
+> **Note:** The annotation does **not** replace inner code links. A Gherkin test function still references its `.feature` file through the test framework’s own mechanism (e.g., `@pytest.mark.usefixtures`, `@CucumberOptions`). The `@LivDoc:GherkinScenario` annotation adds a **traceability layer** for living documentation purposes.
 
 **Example:**
 
@@ -705,49 +1124,200 @@ class LoginSteps:
         ...
 ```
 
-### 8.9 Summary — Full Catalogue
+### 8.9 Decisions (Technology, Library, Business)
 
-| Category | Types |
-|---|---|
-| Requirements & Traceability | `Feature`, `UserStory`, `Requirement`, `AC`, `Epic` |
-| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `TestData`, `CoverageExclusion` |
-| Architecture & Design | `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent` |
-| API & Contracts | `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType` |
-| Ownership & Operations | `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier` |
-| Lifecycle & Deprecation | `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide` |
-| Security & Compliance | `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel` |
-| Living Documentation | `GherkinScenario`, `GherkinFeature`, `BDDStep`, `SpecFlowBinding` |
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Decision** | `@LivDoc:Decision(type, title, ...)` | `class`, `module` | Decision Log | Architecture | Records a technology, library, or business decision in-place (multiline) |
+| **TechChoice** | `@LivDoc:TechChoice(technology)` | `class`, `module` | Technology Radar | Architecture | Quick tag for a technology choice without full decision context |
+
+**Example:**
+
+```python
+class EventBus:
+    """
+    @LivDoc:Decision(
+        type=technology,
+        title=Use Apache Kafka for event streaming,
+        rationale=High throughput and exactly-once semantics required for order events,
+        alternatives=RabbitMQ\, AWS SQS,
+        date=2026-01-15,
+        status=accepted
+    )
+    @LivDoc:TechChoice(Apache Kafka)
+    """
+    ...
+```
+
+### 8.10 Glossary & Domain Terms
+
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Glossary** | `@LivDoc:Glossary(term, definition)` | `class` | Domain Glossary | Business | Defines a domain term at the point where the concept is implemented (multiline) |
+
+**Example:**
+
+```python
+class ShoppingCart:
+    """
+    @LivDoc:Glossary(
+        term=Shopping Cart,
+        definition=A temporary collection of items selected by a customer
+            for purchase. A cart becomes an Order upon checkout.
+    )
+    @LivDoc:BoundedContext(OrderManagement)
+    @LivDoc:Aggregate(ShoppingCart)
+    """
+    ...
+```
+
+### 8.11 Domain Objects
+
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **DomainObject** | `@LivDoc:DomainObject(name)` | `class` | Domain Model | Architecture | Marks a class as a domain object with its bounded context |
+| **ValueObject** | `@LivDoc:ValueObject(name)` | `class` | Domain Model | Architecture | Marks an immutable value object in DDD |
+| **DomainService** | `@LivDoc:DomainService(name)` | `class` | Domain Model | Architecture | Marks a domain service (stateless business logic) |
+
+**Example:**
+
+```python
+# @LivDoc:ValueObject(Money)
+# @LivDoc:Glossary(term=Money, definition=A value object representing an amount with currency)
+class Money:
+    def __init__(self, amount: Decimal, currency: str):
+        ...
+```
+
+### 8.12 Project Description Files
+
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **ProjectDescription** | `@LivDoc:ProjectDescription(name, purpose, ...)` | `module` | Project Overview | Business | Captures high-level project or module description (multiline) |
+| **ModuleDescription** | `@LivDoc:ModuleDescription(name, purpose)` | `module` | Architecture Overview | Technical | Documents a module’s purpose within the system |
+
+**Example (in `__init__.py`):**
+
+```python
+"""
+@LivDoc:ModuleDescription(
+    name=living_doc_augmentor,
+    purpose=Core scanning engine and augmentation type system
+        for the Living Documentation Source Code Augmentor GitHub Action
+)
+"""
+```
+
+**Example (in `README.md`):**
+
+```markdown
+<!-- @LivDoc:ProjectDescription(
+    name=Order Management Service,
+    purpose=Microservice handling order placement\, tracking\, and fulfillment,
+    team=team-orders,
+    tier=tier-1
+) -->
+# Order Management Service
+...
+```
+
+### 8.13 Summary — Full Catalogue
+
+| Category | Types | Primary Audience |
+|---|---|---|
+| Requirements & Traceability | `Feature`, `UserStory`, `Requirement`, `AC`, `Epic` | Business |
+| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `TestData`, `CoverageExclusion` | QA |
+| Architecture & Design | `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent` | Architecture |
+| API & Contracts | `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType` | Technical |
+| Ownership & Operations | `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier` | Operations |
+| Lifecycle & Deprecation | `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide` | Technical |
+| Security & Compliance | `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel` | Security |
+| Living Documentation | `GherkinScenario`, `GherkinFeature`, `BDDStep`, `SpecFlowBinding` | QA |
+| Decisions | `Decision`, `TechChoice` | Architecture |
+| Glossary & Domain Terms | `Glossary` | Business |
+| Domain Objects | `DomainObject`, `ValueObject`, `DomainService` | Architecture |
+| Project Descriptions | `ProjectDescription`, `ModuleDescription` | Business / Technical |
 
 ---
 
 ## 9. Configuration
 
-### 9.1 Configuration File
+### 9.1 Configuration Files
 
-The action reads configuration from `augmentation_types.yml` (path configurable via input).
+The action reads one or more configuration files specified via the `config-path` input. Multiple files are comma-separated:
+
+```yaml
+config-path: "livdoc_core.yml,livdoc_qa.yml,livdoc_ops.yml"
+```
+
+Each file defines its own `annotation_prefix`, creating a separate namespace. Types across files must not have conflicting fully-qualified tags (e.g., two files both defining `@LivDoc:Feature` is an error).
 
 ### 9.2 Configuration Validation
 
 On startup, the action validates:
 
-- YAML syntax is correct.
+- YAML syntax is correct in all config files.
 - All required fields are present for each type.
-- Regex patterns compile successfully.
+- Regex patterns (explicit or auto-generated) compile successfully.
 - File glob patterns are valid.
-- No duplicate type names or tags.
+- No duplicate fully-qualified tags across all loaded config files.
+- `annotation_prefix` is present in each config file.
 
 Invalid configuration causes exit code `2`.
 
 ---
 
-## 10. Action Inputs & Outputs
+## 10. Ignore Rules
+
+Developers can suppress specific augmentor violations using `@LivDoc:Ignore` annotations. This preserves user decisions where a violation is intentional.
+
+### 10.1 Syntax
+
+```python
+class HelperUtility:
+    """
+    Internal helper — no feature annotation needed.
+
+    @LivDoc:Ignore(Feature, reason=Internal utility not mapped to a feature)
+    """
+    ...
+```
+
+### 10.2 Ignore Variants
+
+| Syntax | Scope |
+|---|---|
+| `@LivDoc:Ignore(TypeName)` | Suppress violations for `TypeName` on this target |
+| `@LivDoc:Ignore(TypeName, reason=...)` | Same, with a documented reason (recommended) |
+| `@LivDoc:Ignore(*)` | Suppress all augmentor violations on this target |
+
+### 10.3 Behavior
+
+- Ignored violations are **not** counted in the exit code.
+- Ignored violations **are** reported in the summary with status `ignored`.
+- The collector **still extracts** `@LivDoc:Ignore` annotations (they appear in `code_augmentations.json` with `type: "Ignore"`).
+- An ignore without a `reason` produces a `warning`.
+
+### 10.4 File-Level Ignore
+
+To ignore all violations for an entire file, place at the top of the file:
+
+```python
+"""
+@LivDoc:Ignore(*, reason=Auto-generated file — annotations managed externally)
+"""
+```
+
+---
+
+## 11. Action Inputs & Outputs
 
 ### Inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `regime` | yes | — | Operating mode: `augmentor` or `collector` |
-| `config-path` | no | `augmentation_types.yml` | Path to the augmentation types configuration file |
+| `config-path` | no | `augmentation_types.yml` | Comma-separated list of augmentation types config files |
 | `scan-mode` | no | `pr` | Augmentor scan mode: `pr`, `full`, or `per-type` |
 | `augmentation-type` | no | — | When `scan-mode: per-type`, the specific type to check |
 | `source-paths` | no | `.` | Comma-separated list of directories to scan |
@@ -755,7 +1325,6 @@ Invalid configuration causes exit code `2`.
 | `output-path` | no | `code_augmentations.json` | Output file path for the collector regime |
 | `fail-on-violations` | no | `true` | Whether the augmentor should fail the workflow on violations |
 | `verbose` | no | `false` | Enable verbose/debug logging |
-| `python-version` | no | `3.14` | Python version to use |
 
 ### Outputs
 
@@ -768,7 +1337,7 @@ Invalid configuration causes exit code `2`.
 
 ---
 
-## 11. Collector Output Schema
+## 12. Collector Output Schema
 
 The collector produces `code_augmentations.json` with the following structure:
 
@@ -864,7 +1433,7 @@ The collector produces `code_augmentations.json` with the following structure:
 
 ---
 
-## 12. GitHub Action Definition (action.yml)
+## 13. GitHub Action Definition (action.yml)
 
 The action follows the composite action pattern used in AbsaOSS/generate-release-notes:
 
@@ -878,7 +1447,7 @@ inputs:
     description: 'Operating mode: augmentor or collector'
     required: true
   config-path:
-    description: 'Path to augmentation_types.yml'
+    description: 'Comma-separated list of augmentation types config files'
     required: false
     default: 'augmentation_types.yml'
   scan-mode:
@@ -958,13 +1527,13 @@ runs:
 
 ---
 
-## 13. Example Workflows
+## 14. Example Workflows
 
-### 13.1 Example Implementation in AbsaOSS/generate-release-notes
+### 14.1 Example Implementation in AbsaOSS/generate-release-notes
 
 The following examples show how living-doc-augmentor-gh would be integrated into the AbsaOSS/generate-release-notes repository.
 
-#### 13.1.1 PR Augmentor Check
+#### 14.1.1 PR Augmentor Check
 
 ```yaml
 name: Living Doc Augmentor — PR Check
@@ -992,7 +1561,7 @@ jobs:
           fail-on-violations: 'true'
 ```
 
-#### 13.1.2 Full Repository Scan (On-Demand)
+#### 14.1.2 Full Repository Scan (On-Demand)
 
 ```yaml
 name: Living Doc Augmentor — Full Scan
@@ -1022,7 +1591,7 @@ jobs:
           fail-on-violations: 'false'
 ```
 
-#### 13.1.3 Collector (Extract Annotations for Release)
+#### 14.1.3 Collector (Extract Annotations for Release)
 
 ```yaml
 
@@ -1063,55 +1632,100 @@ jobs:
 
 ---
 
-## 14. Quality Gates
+## 15. Quality Gates
 
-Modeled after AbsaOSS/generate-release-notes, the repository enforces the following quality gates:
+Modeled after AbsaOSS/generate-release-notes, the repository enforces the following quality gates.
 
-### 14.1 CI Workflows
+> **On-Demand CI:** All CI workflows use `workflow_dispatch` (or `pull_request` where
+> essential) to protect paid GitHub Actions minutes. Developers run the full
+> quality-gate suite **locally** before pushing (see §15.4).
+
+### 15.1 CI Workflows
 
 | Workflow | Trigger | Description |
 |---|---|---|
-| Unit Tests | PR, push to main | Run pytest with coverage ≥ 80% |
-| Integration Tests | PR, push to main | End-to-end tests with sample repositories |
-| Linting (pylint) | PR, push to main | Pylint score ≥ 9.0/10 |
-| Linting (ruff) | PR, push to main | Zero ruff violations |
-| Type Checking (mypy) | PR, push to main | Strict mode, zero errors |
-| Code Formatting (black) | PR, push to main | Zero formatting violations |
-| Dependency Audit | PR, scheduled | Check for known vulnerabilities |
-| PR Title Convention | PR | Enforce conventional commit format |
-| YAML Validation | PR | Validate action.yml and example configs |
+| Unit Tests | `workflow_dispatch`, `pull_request` | Run pytest with coverage ≥ **95 %** |
+| Integration Tests | `workflow_dispatch` | End-to-end tests with sample repositories |
+| Linting (pylint) | `workflow_dispatch`, `pull_request` | Pylint score ≥ 9.0/10 |
+| Linting (ruff) | `workflow_dispatch`, `pull_request` | Zero ruff violations |
+| Type Checking (mypy) | `workflow_dispatch`, `pull_request` | Strict mode, zero errors |
+| Code Formatting (black) | `workflow_dispatch`, `pull_request` | Zero formatting violations |
+| Complexity (radon) | `workflow_dispatch`, `pull_request` | Cyclomatic complexity ≤ **B** (no function rated C or worse) |
+| Dependency Audit | `workflow_dispatch`, `schedule` | `pip audit` — check for known vulnerabilities |
+| PR Title Convention | `pull_request` | Enforce conventional commit format |
+| YAML Validation | `pull_request` | Validate `action.yml` and example configs |
 
-### 14.2 Branch Protection Rules
+### 15.2 Branch Protection Rules
 
 - Require PR reviews (≥ 1 approval).
 - Require all status checks to pass before merging.
 - Require linear history (no merge commits).
 - Require signed commits (recommended).
 
-### 14.3 Configuration Files (modeled after generate-release-notes)
+### 15.3 Configuration Files
 
 | File | Purpose |
 |---|---|
 | `.pylintrc` | Pylint configuration (see generate-release-notes/.pylintrc) |
-| `pyproject.toml` | Project metadata, black/mypy/ruff configuration |
+| `pyproject.toml` | Project metadata, black/mypy/ruff/radon configuration |
 | `requirements.txt` | Runtime dependencies |
-| `requirements-dev.txt` | Development/testing dependencies |
-| `renovate.json` | Automated dependency updates (see generate-release-notes/renovate.json) |
+| `requirements-dev.txt` | Development/testing dependencies (incl. `radon`, `pip-audit`) |
+| `.github/dependabot.yml` | Automated dependency updates via Dependabot |
+
+### 15.4 Local Quality-Gate Script
+
+A `Makefile` (with a thin wrapper `scripts/run_qa.sh` for CI parity) runs **every**
+gate locally so developers never need to push just to see CI results:
+
+```makefile
+.PHONY: qa lint typecheck fmt complexity test audit
+
+qa: lint typecheck fmt complexity test audit  ## Run ALL quality gates
+
+lint:
+	pylint living_doc_augmentor
+	ruff check .
+
+typecheck:
+	mypy living_doc_augmentor
+
+fmt:
+	black --check .
+
+complexity:
+	radon cc living_doc_augmentor -a -nb   # fail on grade C+
+
+test:
+	pytest --cov=living_doc_augmentor --cov-fail-under=95 tests/
+
+audit:
+	pip-audit -r requirements.txt
+```
+
+```bash
+# Quick one-liner
+make qa
+# …or via wrapper (same thing, used in CI)
+./scripts/run_qa.sh
+```
 
 ---
 
-## 15. Repository Structure
+## 16. Repository Structure
+
+> **Single-purpose files:** Every source module has exactly one responsibility.
+> Test files mirror the source tree 1:1 so navigation is instant.
 
 ```code
 living-doc-augmentor-gh/
 ├── .github/
-│   ├── copilot-instructions.md           # Copilot project context
+│   ├── copilot-instructions.md           # AI assistant project context
+│   ├── dependabot.yml                    # Automated dependency updates
 │   ├── workflows/
 │   │   ├── ci.yml                        # Unit tests, linting, type checking
 │   │   ├── integration_tests.yml         # Integration tests
 │   │   ├── check_pr_title.yml            # PR title convention
-│   │   ├── release_draft.yml             # Release draft automation
-│   │   └── dependabot.yml                # Dependency management
+│   │   └── release_draft.yml             # Release draft automation
 │   └── CODEOWNERS
 ├── living_doc_augmentor/
 │   ├── __init__.py
@@ -1122,18 +1736,21 @@ living-doc-augmentor-gh/
 │   ├── models.py                         # Data models (Pydantic)
 │   ├── diff_parser.py                    # PR diff parsing for PR mode
 │   ├── formatters.py                     # Output formatting (JSON, GitHub annotations)
+│   ├── ignore.py                         # @LivDoc:Ignore logic
 │   ├── location.py                       # Location detection system & matchers
 │   ├── languages.py                      # Language-specific comment/target definitions
 │   └── utils.py                          # Shared utilities
 ├── tests/
 │   ├── unit/
-│   │   ├── test_augmentor.py
-│   │   ├── test_collector.py
-│   │   ├── test_scanner.py
-│   │   ├── test_config.py
-│   │   ├── test_models.py
-│   │   ├── test_location.py
-│   │   └── test_diff_parser.py
+│   │   ├── test_augmentor.py             # ← mirrors augmentor.py
+│   │   ├── test_collector.py             # ← mirrors collector.py
+│   │   ├── test_scanner.py               # ← mirrors scanner.py
+│   │   ├── test_config.py                # ← mirrors config.py
+│   │   ├── test_models.py                # ← mirrors models.py
+│   │   ├── test_ignore.py                # ← mirrors ignore.py
+│   │   ├── test_location.py              # ← mirrors location.py
+│   │   ├── test_languages.py             # ← mirrors languages.py
+│   │   └── test_diff_parser.py           # ← mirrors diff_parser.py
 │   ├── integration/
 │   │   ├── test_augmentor_pr_mode.py
 │   │   ├── test_augmentor_full_mode.py
@@ -1149,15 +1766,17 @@ living-doc-augmentor-gh/
 │   ├── workflow_pr_check.yml             # Example PR workflow
 │   ├── workflow_full_scan.yml            # Example full-scan workflow
 │   └── workflow_collector.yml            # Example collector workflow
+├── scripts/
+│   └── run_qa.sh                         # CI-equivalent local QA wrapper
 ├── docs/
 │   └── SPEC.md                           # This file
 ├── action.yml                            # Composite action definition
 ├── main.py                               # Entry point
+├── Makefile                              # Local quality-gate runner (see §15.4)
 ├── requirements.txt                      # Runtime dependencies
 ├── requirements-dev.txt                  # Dev/test dependencies
 ├── pyproject.toml                        # Project configuration
 ├── .pylintrc                             # Pylint configuration
-├── renovate.json                         # Renovate bot configuration
 ├── .gitignore
 ├── LICENSE
 ├── CONTRIBUTING.md
@@ -1168,16 +1787,26 @@ living-doc-augmentor-gh/
 
 ---
 
-## 16. Copilot Integration
+## 17. AI Assistant Integration
 
-GitHub Copilot is a first-class citizen in this project. The action, its configuration, and its codebase are designed to maximize the value developers get from Copilot — both when **using** the action in their projects and when **contributing** to the action itself.
+> **Model-agnostic design.** While GitHub Copilot is the primary example below,
+> every technique applies equally to **any** LLM-backed coding assistant
+> (Claude, Gemini, Cursor, Cody, etc.). The project never depends on a specific
+> model or vendor — only on well-structured code and configuration that any
+> assistant can leverage.
 
-### 16.1 Copilot Instructions File
+AI-powered coding assistants are first-class citizens in this project. The
+action, its configuration, and its codebase are designed to maximize the value
+developers get from assistants — both when **using** the action in their
+projects and when **contributing** to the action itself.
 
-The repository ships a `.github/copilot-instructions.md` file that provides Copilot with project-specific context:
+### 17.1 AI Assistant Instructions File
+
+The repository ships a `.github/copilot-instructions.md` file (also usable by
+Claude, Gemini, and other assistants that read project-context files):
 
 ```markdown
-# Copilot Instructions — Living Doc Augmentor
+# AI Assistant Instructions — Living Doc Augmentor
 
 ## Project Context
 This is a composite GitHub Action (Python 3.14) that validates and extracts
@@ -1201,7 +1830,7 @@ structured `@LivDoc:*` annotations from source code.
 - Set appropriate `target` and `file_patterns`
 ```
 
-### 16.2 Plugin Architecture
+### 17.2 Plugin Architecture
 
 The scanner supports pluggable detection strategies:
 
@@ -1214,7 +1843,7 @@ class DetectionStrategy(Protocol):
         ...
 ```
 
-### 16.3 Built-in Detection Strategies
+### 17.3 Built-in Detection Strategies
 
 | Strategy | Description |
 |---|---|
@@ -1222,19 +1851,19 @@ class DetectionStrategy(Protocol):
 | `DocstringDetectionStrategy` | Python docstring-aware detection (understands docstring boundaries) |
 | `CommentBlockDetectionStrategy` | Generic comment block detection (`/** */`, `# ...`, `<!-- -->`) |
 
-### 16.4 Copilot Agent Mode Support
+### 17.4 Agent Mode Support
 
-The project is structured to work optimally with Copilot in **agent mode** (multi-step autonomous tasks):
+The project is structured to work optimally with AI assistants in **agent mode** (multi-step autonomous tasks):
 
 - **Clear file responsibilities:** Each module has a single, well-documented purpose (see §3 Architecture).
-- **Protocol-based interfaces:** All extension points use Python `Protocol` classes, making it easy for Copilot to generate conforming implementations.
+- **Protocol-based interfaces:** All extension points use Python `Protocol` classes, making it easy for assistants to generate conforming implementations.
 - **Comprehensive type hints:** Python 3.14 type hints on every function, method, and variable.
 - **Detailed docstrings:** Every public API includes docstrings describing intent, parameters, return values, and side effects.
-- **Test-first patterns:** Test files mirror source files 1:1, enabling Copilot to generate tests alongside implementation.
+- **Test-first patterns:** Test files mirror source files 1:1, enabling assistants to generate tests alongside implementation.
 
-### 16.5 Copilot Chat Participant (Future)
+### 17.5 Chat Participant — `@livingdoc` (Future)
 
-A custom `@livingdoc` chat participant can be registered to provide in-editor assistance:
+A custom `@livingdoc` chat participant can be registered in VS Code (or equivalent IDE plugin) to provide in-editor assistance:
 
 | Command | Description |
 |---|---|
@@ -1244,17 +1873,19 @@ A custom `@livingdoc` chat participant can be registered to provide in-editor as
 | `@livingdoc /explain` | Explain the purpose and rules of a specific augmentation type |
 | `@livingdoc /catalogue` | Show available augmentation types from the catalogue (§8) with usage examples |
 | `@livingdoc /coverage` | Report annotation coverage statistics for the workspace |
+| `@livingdoc /auto-fix` | Automatically add missing `@LivDoc:*` annotations to the current file (AI-assisted) |
 
-### 16.6 Copilot Extension Points
+### 17.6 AI Extension Points
 
-- **Custom detection strategies:** Copilot can generate new `DetectionStrategy` implementations for project-specific patterns.
-- **Augmentation type templates:** Copilot can generate `augmentation_types.yml` entries based on project conventions.
-- **Rule generation:** Copilot can analyze existing code and suggest appropriate annotation rules.
-- **False positive tuning:** Detection thresholds and exclusion patterns can be refined with Copilot assistance.
-- **Annotation authoring:** In-editor Copilot suggestions can auto-complete `@LivDoc:*` tags based on context.
-- **Review assistance:** Copilot can review PRs for missing annotations and suggest additions.
+- **Custom detection strategies:** Assistants can generate new `DetectionStrategy` implementations for project-specific patterns.
+- **Augmentation type templates:** Assistants can generate `augmentation_types.yml` entries based on project conventions.
+- **Rule generation:** Assistants can analyze existing code and suggest appropriate annotation rules.
+- **False positive tuning:** Detection thresholds and exclusion patterns can be refined with AI assistance.
+- **Annotation authoring:** In-editor assistant suggestions can auto-complete `@LivDoc:*` tags based on context.
+- **Review assistance:** Assistants can review PRs for missing annotations and suggest additions.
+- **Auto-fix (AI-scoped):** Given a violation list, an AI assistant can propose fix commits adding the missing annotations.
 
-### 16.7 Copilot-Friendly Code Patterns
+### 17.7 AI-Friendly Code Patterns
 
 All core modules include:
 
@@ -1262,13 +1893,13 @@ All core modules include:
 - Detailed docstrings explaining intent and contracts.
 - Clear separation of concerns enabling targeted modifications.
 - Well-defined interfaces (`Protocol` classes) for extensibility.
-- Inline `# TODO(copilot):` markers for areas where Copilot assistance is expected.
+- Inline `# TODO(ai):` markers for areas where assistant help is expected.
 
 ---
 
-## 17. Error Reporting & Diagnostics
+## 18. Error Reporting & Diagnostics
 
-### 17.1 Violation Report Format
+### 18.1 Violation Report Format
 
 The augmentor produces structured violation reports:
 
@@ -1277,7 +1908,7 @@ The augmentor produces structured violation reports:
 ::warning file=src/utils.py,line=15,col=1::Unrecognized annotation @LivDoc:Unknown in comment block
 ```
 
-### 17.2 Severity Levels
+### 18.2 Severity Levels
 
 | Level | GitHub Annotation | CI Behavior |
 |---|---|---|
@@ -1285,7 +1916,7 @@ The augmentor produces structured violation reports:
 | `warning` | `::warning` | Reported but does not fail the workflow |
 | `info` | `::notice` | Informational — logged but no annotation |
 
-### 17.3 Diagnostic Output
+### 18.3 Diagnostic Output
 
 When `verbose: true`, the action produces detailed diagnostic output:
 
@@ -1295,7 +1926,7 @@ When `verbose: true`, the action produces detailed diagnostic output:
 - Location detection decisions (which layer matched/rejected).
 - Timing information per phase.
 
-### 17.4 Summary Report
+### 18.4 Summary Report
 
 After every run, the action writes a summary to `$GITHUB_STEP_SUMMARY`:
 
@@ -1319,9 +1950,9 @@ After every run, the action writes a summary to `$GITHUB_STEP_SUMMARY`:
 
 ---
 
-## 18. Versioning & Compatibility
+## 19. Versioning & Compatibility
 
-### 18.1 Configuration Schema Versioning
+### 19.1 Configuration Schema Versioning
 
 The `augmentation_types.yml` file includes a `version` field:
 
@@ -1331,7 +1962,7 @@ version: "1.0"
 
 The action validates that the configuration version is compatible with the running action version. Incompatible versions produce exit code `2` with a clear error message.
 
-### 18.2 Semantic Versioning
+### 19.2 Semantic Versioning
 
 The action follows [Semantic Versioning 2.0.0](https://semver.org/):
 
@@ -1339,11 +1970,11 @@ The action follows [Semantic Versioning 2.0.0](https://semver.org/):
 - **MINOR:** New augmentation type properties, new detection strategies, new inputs/outputs.
 - **PATCH:** Bug fixes, performance improvements, documentation updates.
 
-### 18.3 Output Schema Versioning
+### 19.3 Output Schema Versioning
 
 The `code_augmentations.json` output includes a `tool_version` field in metadata. Consumers should use this to handle schema evolution.
 
-### 18.4 Backward Compatibility Policy
+### 19.4 Backward Compatibility Policy
 
 - Configuration files from version `N` will work with action version `N+1` (one major version forward compatibility).
 - Output schema changes within a major version are always additive (new fields only, never removed).
@@ -1351,37 +1982,37 @@ The `code_augmentations.json` output includes a `tool_version` field in metadata
 
 ---
 
-## 19. Security Considerations
+## 20. Security Considerations
 
-### 19.1 Input Validation
+### 20.1 Input Validation
 
 - All regex patterns from `augmentation_types.yml` are compiled with timeout protection to prevent ReDoS attacks.
 - File glob patterns are validated and sandboxed to the repository root — no path traversal is possible.
 - Action inputs are sanitized before use in shell commands.
 
-### 19.2 No Code Execution
+### 20.2 No Code Execution
 
 The action **reads** source code but never **executes** it. Annotations are extracted from comments and docstrings only — no imports, no `eval`, no dynamic code loading.
 
-### 19.3 Output Sanitization
+### 20.3 Output Sanitization
 
 The `code_augmentations.json` output sanitizes all extracted values to prevent injection when consumed by downstream tools.
 
-### 19.4 Dependency Security
+### 20.4 Dependency Security
 
 - Dependencies are pinned to exact versions in `requirements.txt`.
-- Automated dependency updates via Renovate with vulnerability alerts.
+- Automated dependency updates via **Dependabot** with vulnerability alerts.
 - `pip audit` is included in the CI pipeline.
 
-### 19.5 Permissions
+### 20.5 Permissions
 
 The GitHub Action requires only `contents: read` permission. It does not need write access to the repository.
 
 ---
 
-## 20. Performance & Scalability
+## 21. Performance & Scalability
 
-### 20.1 Design Targets
+### 21.1 Design Targets
 
 | Metric | Target |
 |---|---|
@@ -1390,7 +2021,7 @@ The GitHub Action requires only `contents: read` permission. It does not need wr
 | Memory usage | < 256 MB for repositories with up to 10,000 files |
 | Collector output generation | < 10 seconds for 10,000 annotations |
 
-### 20.2 Optimization Strategies
+### 21.2 Optimization Strategies
 
 - **Lazy file reading:** Files are read only when their path matches at least one `file_patterns` glob.
 - **Early termination:** In PR mode, only changed files are loaded.
@@ -1398,59 +2029,292 @@ The GitHub Action requires only `contents: read` permission. It does not need wr
 - **Streaming scan:** Files are scanned line-by-line to avoid loading entire files into memory for large files.
 - **Parallel file processing:** Multi-threaded file scanning for full-repo mode (configurable concurrency).
 
-### 20.3 Caching (Future)
+### 21.3 Caching (Future)
 
 A future version will support caching scan results keyed by file content hash, enabling incremental scans that skip unchanged files.
 
 ---
 
-## 21. Roadmap
+## 22. Tutorial — Full Augmentation Examples
 
-### Phase 1 — Foundation (v0.1.0)
+This section provides a **complete, copy-pasteable** reference for every
+augmentation category defined in §8. Each example shows the annotation in
+context — including multiline variants — so teams can use this chapter as a
+self-service onboarding guide.
 
-- [ ] Repository scaffolding with quality gates
-- [ ] Configuration schema (`augmentation_types.yml`) and validator
-- [ ] Core scanner with regex-based detection
-- [ ] Augmentor regime — full scan mode
-- [ ] Collector regime — JSON output
-- [ ] Unit tests (≥ 80% coverage)
+### 22.1 Traceability (Feature, AC, User Story)
+
+```python
+class OrderService:
+    """Service handling order lifecycle.
+
+    @LivDoc:Feature(ORD-001)
+    @LivDoc:AC(ORD-001-AC-01)
+    @LivDoc:UserStory(US-042)
+    """
+
+    def place_order(self, cart: Cart) -> Order:
+        """Place an order from a shopping cart.
+
+        @LivDoc:AC(ORD-001-AC-02)
+
+        Multi-value: a single method may satisfy several acceptance criteria.
+        The documentation fragment lives close to the code that fulfils it.
+        """
+        ...
+```
+
+### 22.2 Testing (TestEvidence, BDD Keyword Catalogue)
+
+```python
+# @LivDoc:TestEvidence(ORD-001-AC-01)
+def test_place_order_creates_record(order_service, sample_cart):
+    """Verify that placing an order persists a record."""
+    ...
+```
+
+**BDD keyword catalogue per PageObject:**
+
+```gherkin
+# features/order.feature
+# @LivDoc:BDDKeywords(OrderPage: place_order, verify_total, apply_discount)
+Feature: Order management
+  Scenario: Place a new order
+    Given the user is on the OrderPage
+    When  the user calls place_order
+    Then  the order total matches verify_total
+```
+
+### 22.3 Architecture (Layer, Component, ArchDecision)
+
+```java
+/**
+ * @LivDoc:Layer(Application)
+ * @LivDoc:Component(OrderProcessing)
+ * @LivDoc:ArchDecision(ADR-007 — Use event sourcing for order state)
+ */
+public class OrderCommandHandler {
+    // ...
+}
+```
+
+### 22.4 API Documentation (Endpoint, Contract, DataModel)
+
+```python
+class UserRouter:
+    """
+    @LivDoc:Endpoint(GET /api/v1/users/{id})
+    @LivDoc:Contract(UserResponseV1)
+    @LivDoc:DataModel(UserDTO)
+    """
+    ...
+```
+
+### 22.5 Operations (Runbook, Alert, SLA)
+
+```yaml
+# monitoring/alerts.yml
+# @LivDoc:Alert(OrderLatencyP99 > 500ms)
+# @LivDoc:Runbook(https://wiki.example.com/runbooks/order-latency)
+# @LivDoc:SLA(99.9% availability for /api/v1/orders)
+groups:
+  - name: order_alerts
+    rules:
+      - alert: OrderLatencyHigh
+        expr: histogram_quantile(0.99, rate(order_duration_seconds_bucket[5m])) > 0.5
+```
+
+### 22.6 Compliance (Regulation, DataClassification, AuditControl)
+
+```python
+class PaymentProcessor:
+    """Process credit-card payments.
+
+    @LivDoc:Regulation(PCI-DSS v4.0 §6.2)
+    @LivDoc:DataClassification(PII — credit card number)
+    @LivDoc:AuditControl(AC-PAY-003 — encrypt card data at rest)
+    """
+    ...
+```
+
+### 22.7 Dependencies (ExternalSystem, Library, Migration)
+
+```python
+# @LivDoc:ExternalSystem(Stripe API v2023-10-16)
+# @LivDoc:Library(stripe-python 7.1.0)
+import stripe
+
+# @LivDoc:Migration(V3__add_payment_method_column)
+def upgrade():
+    op.add_column("users", sa.Column("payment_method", sa.String()))
+```
+
+### 22.8 Process (Workflow, SLA, Stakeholder)
+
+```typescript
+/**
+ * @LivDoc:Workflow(OnboardNewClient)
+ * @LivDoc:SLA(Client onboarding < 48h)
+ * @LivDoc:Stakeholder(Legal, Compliance, Sales)
+ */
+export class ClientOnboardingOrchestrator { /* ... */ }
+```
+
+### 22.9 Decisions
+
+```python
+class EventBus:
+    """Central event bus.
+
+    @LivDoc:TechDecision(TECH-012 — RabbitMQ chosen over Kafka for simplicity)
+    @LivDoc:LibDecision(LIB-005 — pika 1.3 for AMQP connectivity)
+    """
+    ...
+```
+
+```scala
+/** @LivDoc:BusinessDecision(BIZ-009 — Free tier limited to 1 000 events/month) */
+object PricingPolicy
+```
+
+### 22.10 Glossary
+
+```python
+class Tenant:
+    """A Tenant is an isolated organizational unit within the platform.
+
+    @LivDoc:Glossary(Tenant — An isolated organizational unit that owns
+      its own data partition, user base, and configuration. Tenants
+      are the top-level boundary for multi-tenancy.)
+    """
+    ...
+```
+
+### 22.11 Domain Objects
+
+```java
+/**
+ * @LivDoc:DomainObject(Order — Aggregate root representing a customer purchase.
+ *   Invariant: total = Σ line-item prices + tax − discount.
+ *   Lifecycle: Draft → Placed → Fulfilled → Closed.)
+ */
+public class Order { /* ... */ }
+```
+
+### 22.12 Project Descriptions
+
+```markdown
+<!-- @LivDoc:ProjectDescription(living-doc-augmentor-gh — A composite GitHub
+  Action that validates and extracts structured @LivDoc annotations from source
+  code, producing JSON output for living-documentation pipelines.) -->
+# Living Doc Augmentor
+```
+
+### 22.13 Cross-Language Parity
+
+The **same** logical annotation in different languages:
+
+| Language | Example |
+|---|---|
+| Python | `# @LivDoc:Feature(ORD-001)` or inside `"""..."""` |
+| Java | `// @LivDoc:Feature(ORD-001)` or inside `/** ... */` |
+| Scala | `// @LivDoc:Feature(ORD-001)` or inside `/** ... */` |
+| TypeScript | `// @LivDoc:Feature(ORD-001)` or inside `/** ... */` |
+| Terraform | `# @LivDoc:Feature(ORD-001)` |
+| HTML | `<!-- @LivDoc:Feature(ORD-001) -->` |
+| XML | `<!-- @LivDoc:Feature(ORD-001) -->` |
+| Markdown | `<!-- @LivDoc:Feature(ORD-001) -->` |
+| YAML | `# @LivDoc:Feature(ORD-001)` |
+| SQL | `-- @LivDoc:Feature(ORD-001)` |
+| Shell | `# @LivDoc:Feature(ORD-001)` |
+| Glue (PySpark) | `# @LivDoc:Feature(ORD-001)` (inside Python script) |
+
+---
+
+## 23. Roadmap
+
+> **Granular iterations.** Each phase is scoped to ≤ 2 weeks of work for a
+> single contributor. Every milestone ships with **≥ 95 % test coverage** and
+> a passing `make qa` run.
+
+### Phase 1 — Scaffold & Core (v0.1.0)
+
+- [ ] Repository scaffolding: `Makefile`, `scripts/run_qa.sh`, CI workflows (`workflow_dispatch`)
+- [ ] `.github/dependabot.yml` for dependency updates
+- [ ] AI assistant instructions file (`.github/copilot-instructions.md`)
+- [ ] Configuration schema (`augmentation_types.yml`) — single file, Pydantic validator
+- [ ] Core scanner with regex-based detection (single-line)
+- [ ] Augmentor regime — full scan mode, exit codes 0/1/2
+- [ ] Collector regime — JSON output (`code_augmentations.json`)
 - [ ] `action.yml` composite action definition
-- [ ] Copilot instructions file (`.github/copilot-instructions.md`)
+- [ ] Unit tests ≥ 95 % coverage; `make qa` green
 
 ### Phase 2 — PR Integration (v0.2.0)
 
-- [ ] PR diff parsing for PR mode
-- [ ] GitHub Actions annotations for violations
-- [ ] Augmentor PR mode with changed-files-only scanning
+- [ ] PR diff parsing for PR mode (changed-files-only)
+- [ ] GitHub Actions annotations for violations (`::error`, `::warning`)
 - [ ] `$GITHUB_STEP_SUMMARY` report
-- [ ] Integration tests with sample repositories
-- [ ] Example workflows for AbsaOSS/generate-release-notes
+- [ ] Integration tests with sample repository fixture
+- [ ] Example workflows (PR check, full scan, collector)
 
-### Phase 3 — Location Detection & Multi-Language (v0.3.0)
+### Phase 3 — Multi-Language & Location Detection (v0.3.0)
 
-- [ ] Generic location detection system (§6) with composable layers
-- [ ] Language-configurable target patterns (Python, TypeScript, Java)
-- [ ] Custom location matchers
-- [ ] Per-type scan mode
-- [ ] Multiple detection strategies (docstring-aware, comment-block-aware)
+- [ ] Generic location detection system (§6) — three composable layers
+- [ ] Language-configurable target patterns: Python, TypeScript, Java, Scala
+- [ ] Additional languages: Terraform, HTML, XML, Markdown, YAML, Shell, SQL, Glue
+- [ ] Custom target definitions in `augmentation_types.yml`
+- [ ] Per-type scan mode (`scan-mode: per-type`)
+
+### Phase 4 — Advanced Features (v0.4.0)
+
+- [ ] Multiline annotation detection
+- [ ] `@LivDoc:Ignore` rules (§10)
+- [ ] Multiple `augmentation_types.yml` files with separate namespaces
+- [ ] Inside/outside placement rules per type
+- [ ] Cross-language parity validation
 - [ ] Augmentation type catalogue examples shipped in `examples/`
 
-### Phase 4 — Copilot Integration (v0.4.0)
+### Phase 5 — AI Assistant Integration (v0.5.0)
 
-- [ ] Copilot agent-mode optimization (Protocol interfaces, docstring contracts)
-- [ ] `@livingdoc` chat participant prototype
-- [ ] `/annotate`, `/check`, `/generate-config` commands
-- [ ] Copilot-assisted `augmentation_types.yml` generation
+- [ ] Agent-mode optimization (Protocol interfaces, docstring contracts)
+- [ ] `@livingdoc` chat participant prototype (VS Code)
+- [ ] `/annotate`, `/check`, `/generate-config`, `/auto-fix` commands
+- [ ] AI-assisted `augmentation_types.yml` generation
 
-### Phase 5 — Maturity (v1.0.0)
+### Phase 6 — New Augmentation Categories (v0.6.0)
+
+- [ ] Decisions (TechDecision, LibDecision, BusinessDecision)
+- [ ] Glossary annotations
+- [ ] Domain Object annotations
+- [ ] Project Description annotations
+- [ ] BDD keyword catalogue per PageObject
+- [ ] Target Document & Audience metadata per category
+
+### Phase 7 — Maturity & Marketplace (v1.0.0)
 
 - [ ] AST-based detection for Python (optional enhancement)
 - [ ] Caching for faster incremental scans
-- [ ] Configurable severity levels for violations
+- [ ] Configurable severity levels per violation
 - [ ] Security hardening (ReDoS protection, input sanitization)
-- [ ] Output schema versioning and backward compatibility guarantees
+- [ ] Output schema versioning & backward compatibility guarantees
 - [ ] Performance benchmarks (1,000+ files/second)
 - [ ] Published to GitHub Marketplace
+
+### Verification Scripts
+
+Each phase ships with:
+
+```bash
+# 1. Full local QA
+make qa
+
+# 2. Smoke-test the action locally (act or nektos/act)
+act -j augmentor-check --secret-file .env
+
+# 3. Coverage report
+pytest --cov=living_doc_augmentor --cov-report=html tests/
+open htmlcov/index.html
+```
 
 ---
 
@@ -1458,17 +2322,28 @@ A future version will support caching scan results keyed by file content hash, e
 
 | Term | Definition |
 |---|---|
-| Augmentation | The process of enriching source code with structured annotations for living documentation |
-| Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
 | Annotation | A structured comment/tag in source code following the `@LivDoc:<Type>(value)` convention |
+| Augmentation | The process of enriching source code with structured annotations for living documentation |
+| Augmentation Catalogue | A collection of pre-defined augmentation type definitions for common IT project documentation needs |
+| Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
 | Augmentor | The regime that validates annotations conform to defined rules |
+| Auto-Prefix | When a config file sets `prefix`, the tag `@LivDoc:<Prefix><Name>` is derived automatically — no need to repeat the prefix in each type's `name` |
+| Chat Participant | A VS Code extension that registers a custom `@` mention in an AI assistant chat for domain-specific assistance |
 | Collector | The regime that extracts all annotations into structured JSON |
+| Cross-Language Parity | The principle that the same logical annotation has equivalent syntax in every supported language |
+| Custom Target | A user-defined code-structure target (regex pattern) extending the built-in target vocabulary |
+| Decision (annotation) | A `@LivDoc:*Decision` annotation capturing a technology, library, or business decision close to the code it affects |
 | Detection Strategy | A pluggable algorithm for finding annotations in source code |
+| Domain Object | A `@LivDoc:DomainObject` annotation documenting an entity, aggregate, or value object from the domain model |
+| Glossary (annotation) | A `@LivDoc:Glossary` annotation defining a term in the project's ubiquitous language |
+| Ignore Rule | A `@LivDoc:Ignore` or `@LivDoc:Ignore(<Type>)` annotation that suppresses augmentor violations for a file, class, or function |
+| AI Assistant Instructions | A `.github/copilot-instructions.md` file that provides project-specific context to AI coding assistants |
+| Living Documentation | Documentation that is automatically generated or validated from source code artifacts, always reflecting the current state of the system |
 | Location Detection | The multi-layer system that determines where in a codebase to look for annotations (file globs → code targets → comment styles) |
 | Location Matcher | A composable rule that validates whether a specific code location is a valid placement for an annotation |
-| Living Documentation | Documentation that is automatically generated or validated from source code artifacts, always reflecting the current state of the system |
-| Copilot Instructions | A `.github/copilot-instructions.md` file that provides project-specific context to GitHub Copilot |
-| Chat Participant | A VS Code extension that registers a custom `@` mention in Copilot Chat for domain-specific assistance |
+| Multi-Config | Support for multiple `augmentation_types.yml` files, each with its own namespace/prefix |
+| Multi-Value | The practice of placing multiple annotations of the same type on a single code element, keeping each documentation fragment close to the code that justifies it |
+| Project Description | A `@LivDoc:ProjectDescription` annotation documenting a repository's purpose, scope, and boundaries |
 | Scoping Layer | One of the three composable layers in the location detection system: file selection, code structure targets, comment style awareness |
-| Augmentation Catalogue | A collection of pre-defined augmentation type definitions for common IT project documentation needs |
+| Target Document | The downstream document (wiki page, handbook, report) that a particular annotation category feeds into |
 
