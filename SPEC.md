@@ -3144,92 +3144,393 @@ The **same** logical annotation in different languages:
 > **POC-first delivery.** The goal is to ship a **usable proof-of-concept as
 > fast as possible** and then iterate with backward-compatible improvements.
 > Feature completeness (all types, all languages) is prioritised **before** AI
-> assistant integration. Each phase is scoped to ≤ 2 weeks of work for a single
-> contributor. Every milestone ships with **≥ 95 % test coverage** and a
-> passing `make qa` run.
+> assistant integration. Every milestone ships with **≥ 95 % test coverage**
+> and a passing `make qa` run.
+>
+> **Time estimates** are per-phase for a single contributor. They reflect
+> relative scope — larger phases have proportionally more tasks. Each phase
+> includes a **task-level breakdown** suitable for deriving `TASKS.md`.
+>
+> **Acceptance criteria** are listed per phase. A phase is complete when **all**
+> its acceptance criteria pass. Criteria follow the pattern:
+> _given (input) → when (action) → then (output / exit code / artifact)._
+
+---
 
 ### Phase 1 — POC: Scaffold & Core (v0.1.0) 🚀
 
-_Goal: A working end-to-end action that can scan Python files and report violations._
+_Goal: A working end-to-end action that can scan Python files and report violations for three starter types._
 
-- [ ] Repository scaffolding: `Makefile`, `scripts/run_qa.sh`, CI workflows (`workflow_dispatch`)
-- [ ] `.github/dependabot.yml` for dependency updates
-- [ ] AI assistant instructions file (`.github/copilot-instructions.md`)
-- [ ] Configuration schema (`augmentation_types.yml`) — single file, Pydantic validator
-- [ ] Core scanner with regex-based detection (single-line)
-- [ ] Augmentor regime — full scan mode, exit codes 0/1/2
-- [ ] Collector regime — JSON output (`code_augmentations.json`)
-- [ ] `action.yml` composite action definition
-- [ ] Basic types: `Feature`, `AC` (simple), `TestEvidence`
-- [ ] Unit tests ≥ 95 % coverage; `make qa` green
-- [ ] README with quickstart example
+_Estimated effort: 1.5–2 weeks._
 
-### Phase 2 — PR Mode & Reporting (v0.2.0)
+#### Tasks
 
-- [ ] PR diff parsing for PR mode (changed-files-only)
-- [ ] GitHub Actions annotations for violations (`::error`, `::warning`)
-- [ ] `$GITHUB_STEP_SUMMARY` report
-- [ ] Integration tests with sample repository fixture
-- [ ] Example workflows (PR check, full scan, collector)
+1. **Repository scaffolding** (~1 d)
+   - [ ] `Makefile`, `scripts/run_qa.sh`, CI workflows (`workflow_dispatch`)
+   - [ ] `.github/dependabot.yml` for dependency updates
+   - [ ] AI assistant instructions file (`.github/copilot-instructions.md`)
+
+2. **Configuration loader** (~1.5 d)
+   - [ ] Configuration schema (`augmentation_types.yml`) — single file, Pydantic validator
+   - [ ] Validate all §5.2 properties used by starter types (see below)
+
+3. **Python-only location detection (minimal §6 subset)** (~1 d)
+   - [ ] Layer 1 — file selection via `file_patterns` / `exclude_patterns` globs
+   - [ ] Layer 2 — Python-only target detection: `class`, `function`, `method`, `module` (regex-based)
+   - [ ] Layer 3 — Python comment parsing: `#` line comments and `"""` docstrings
+   > **Note:** This is a **minimal, Python-only** implementation of the §6 location
+   > detection system — just enough for Phase 1. The full generic multi-language
+   > system is delivered in Phase 4. The Phase 1 implementation must use the same
+   > interfaces (Layer 1/2/3 protocol) so Phase 4 extends rather than replaces it.
+
+4. **Core scanner** (~1.5 d)
+   - [ ] Regex-based single-line annotation detection
+   - [ ] Augmentor regime — full scan mode, exit codes `0`/`1`/`2`
+   - [ ] Collector regime — JSON output (`code_augmentations.json`)
+
+5. **Action packaging** (~0.5 d)
+   - [ ] `action.yml` composite action definition
+   - [ ] README with quickstart example
+
+6. **Starter types: `Feature`, `AC` (simple), `TestEvidence`** (~1 d)
+   - [ ] Each type uses these §5.2 properties: `name`, `target`, `required`, `file_patterns`, `description`, `severity`
+   - [ ] `AC` in Phase 1 is _simple_ (single value, no `sub_values` — that is added in Phase 3)
+   - [ ] Provide `examples/augmentation_types_starter.yml` with all three types fully configured
+
+7. **Quality gate** (~0.5 d)
+   - [ ] Unit tests ≥ 95 % coverage; `make qa` green
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-1.1 | A valid `augmentation_types.yml` with `Feature` (required, target: `class`) | `regime: augmentor`, full scan on a Python repo with one unannotated class | Exit code `1`; violation reported for the unannotated class |
+| AC-1.2 | Same config | Full scan on a repo where all classes have `@LivDoc:Feature(…)` | Exit code `0`; no violations |
+| AC-1.3 | An invalid `augmentation_types.yml` (missing `name`) | Any regime | Exit code `2`; human-readable config error on stderr |
+| AC-1.4 | Valid config with `Feature`, `AC`, `TestEvidence` | `regime: collector` on a repo with mixed annotations | Exit code `0`; `code_augmentations.json` contains all annotated items with correct `type`, `value`, `file`, `line` |
+| AC-1.5 | `file_patterns: ["src/**/*.py"]` and `exclude_patterns: ["**/generated/**"]` | Scan runs | Files matching globs are scanned; excluded files are skipped |
+| AC-1.6 | Annotation in a Python docstring (`"""`) | Scan runs | Annotation is detected (Layer 3 comment parsing works) |
+| AC-1.7 | Annotation in a `#` comment above a class | Scan runs | Annotation is detected (preceding-comment placement works) |
+
+---
+
+### Phase 2 — PR Mode, Reporting & Ignore Rules (v0.2.0)
+
+_Goal: The action is usable in real PR workflows — developers can review violations and suppress false positives._
+
+_Estimated effort: 1.5–2 weeks._
+
+#### Tasks
+
+1. **PR mode** (~2 d)
+   - [ ] PR diff parsing for PR mode (changed-files-only)
+   - [ ] Scoped scanning: only files in the PR diff are checked
+
+2. **Reporting** (~1 d)
+   - [ ] GitHub Actions annotations for violations (`::error`, `::warning`)
+   - [ ] `$GITHUB_STEP_SUMMARY` report with violation table
+
+3. **`@LivDoc:Ignore` rules (§10)** (~1.5 d)
+   - [ ] `@LivDoc:Ignore` — suppress all violations for a target
+   - [ ] `@LivDoc:Ignore(<Type>)` — suppress violations for a specific type
+   - [ ] File-level ignore (top-of-file `@LivDoc:Ignore`)
+   - [ ] Ignored violations excluded from exit code calculation but listed in summary as "suppressed"
+   > **Rationale (moved from Phase 5):** Ignore rules are essential for real-world
+   > PR adoption. Without them, developers cannot suppress false positives,
+   > making the tool unusable in PR checks.
+
+4. **Integration tests** (~1.5 d)
+   - [ ] Sample repository fixture with known violations, ignore rules, and clean files
+   - [ ] Example workflows (PR check, full scan, collector)
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-2.1 | A PR that modifies 3 files (2 with violations) | `regime: augmentor` in PR mode | Only the 2 modified files are reported; untouched files are skipped; exit code `1` |
+| AC-2.2 | A violation on a class | PR mode | `::error` annotation appears on the correct file and line in the PR |
+| AC-2.3 | `$GITHUB_STEP_SUMMARY` | Any augmentor run with violations | Summary contains a Markdown table listing each violation (file, line, type, severity) |
+| AC-2.4 | A class with `@LivDoc:Ignore` in its docstring | Augmentor scans that class | No violation raised; summary lists it as "suppressed (1)" |
+| AC-2.5 | A class with `@LivDoc:Ignore(Feature)` | Augmentor checks `Feature` and `AC` | `Feature` violation suppressed; `AC` violation still raised |
+| AC-2.6 | A file starting with `# @LivDoc:Ignore` | Augmentor scans that file | All violations in the file are suppressed |
+
+---
 
 ### Phase 3 — Full Type Catalogue (v0.3.0)
 
-_Goal: All §8 augmentation categories available out of the box._
+_Goal: All §8 augmentation categories available out of the box. Phase 1 types are **extended**, not re-implemented._
 
-- [ ] Requirements & Traceability: `Feature`, `UserStory`, `Requirement`, `AC` (with sub-values), `Epic`
-- [ ] Testing & Quality: `TestEvidence`, `TestCategory`, `PageObject`, `BDDStep`, `TestData`, `CoverageExclusion`
-- [ ] Architecture & Design: `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent`
-- [ ] API & Contracts: `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType`
-- [ ] Ownership & Operations: `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier`
-- [ ] Lifecycle & Deprecation: `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide`
-- [ ] Security & Compliance: `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel`
-- [ ] Living Documentation: `GherkinScenario`, `GherkinFeature`, `BDDStep`, `SpecFlowBinding`
-- [ ] Decisions: `Decision`, `TechChoice`
-- [ ] Glossary, Domain Objects, Project Descriptions
-- [ ] `examples/augmentation_types_full.yml` with all types
+_Estimated effort: 2–2.5 weeks (large type surface, but each type follows a mechanical pattern)._
+
+> **Relationship to Phase 1 types:** `Feature`, `AC`, and `TestEvidence` already
+> exist from Phase 1. This phase **extends** them with additional §5.2 properties
+> (e.g., `sub_values` for `AC`, `extraction_rules` for `Feature`, `multi_value`
+> for `TestEvidence`) and adds all remaining catalogue types. Phase 1 type
+> definitions remain backward-compatible — new properties are optional with
+> defaults matching Phase 1 behavior.
+
+#### Tasks
+
+1. **Extend Phase 1 types** (~1 d)
+   - [ ] `Feature` — add `extraction_rules` (capture group for feature ID), `auto_fix: deterministic`, `auto_fix_template`
+   - [ ] `AC` — add `sub_values` (lettered/named sub-criteria), `multi_value: true`, `value_format: repeated`
+   - [ ] `TestEvidence` — add `multi_value: true`, `extraction_rules` (requirement ID capture)
+
+2. **New type categories** (~5 d)
+   - [ ] Requirements & Traceability: `UserStory`, `Requirement`, `Epic`
+   - [ ] Testing & Quality: `TestCategory`, `PageObject`, `BDDStep`, `TestData`, `CoverageExclusion`
+   - [ ] Architecture & Design: `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent`
+   - [ ] API & Contracts: `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType`
+   - [ ] Ownership & Operations: `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier`
+   - [ ] Lifecycle & Deprecation: `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide`
+   - [ ] Security & Compliance: `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel`
+   - [ ] Living Documentation: `GherkinScenario`, `GherkinFeature`, `SpecFlowBinding`
+   - [ ] Decisions: `Decision`, `TechChoice`
+   - [ ] Glossary, Domain Objects, Project Descriptions
+
+3. **Catalogue artifact** (~1 d)
+   - [ ] `examples/augmentation_types_full.yml` with all types fully configured (all §5.2 properties)
+   - [ ] Unit tests for each type: detection, extraction, violation reporting
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-3.1 | Phase 1 `augmentation_types_starter.yml` | Loaded by Phase 3 code | All Phase 1 types work identically (backward-compatible) |
+| AC-3.2 | `AC` type with `sub_values` configured | `@LivDoc:AC(AC-001[a: Validate, b: Calculate])` in source | Collector extracts sub-values as structured data in `extracted_data` |
+| AC-3.3 | `augmentation_types_full.yml` with all ~35 types | Augmentor full scan on a test fixture | Each type detects violations correctly; collector extracts all annotations |
+| AC-3.4 | A `Feature` type with `extraction_rules.value_pattern: "^[A-Z]+-\\d+$"` | `@LivDoc:Feature(invalid!)` in source | Augmentor emits a `warning` for the malformed value |
+| AC-3.5 | Every catalogue type | Unit test suite | ≥ 1 positive-match test and ≥ 1 negative-match test per type |
+
+---
 
 ### Phase 4 — Multi-Language & Location Detection (v0.4.0)
 
-- [ ] Generic location detection system (§6) — three composable layers
-- [ ] Language-configurable target patterns: Python, TypeScript, Java, Scala
-- [ ] Additional languages: Terraform, HTML, XML, Markdown, YAML, Shell, SQL, Glue
-- [ ] Custom target definitions in `augmentation_types.yml`
-- [ ] Per-type scan mode (`scan-mode: per-type`)
+_Goal: The full generic location detection system (§6) supporting all specced languages._
+
+_Estimated effort: 2–2.5 weeks._
+
+> **Relationship to Phase 1:** Phase 1 delivers a minimal Python-only
+> implementation of the three scoping layers. Phase 4 **generalises** that
+> implementation into the full §6 system — language definitions, `inherits`,
+> custom targets, and all specced languages. The Phase 1 Python detection
+> becomes one entry in the language registry.
+
+#### Tasks
+
+1. **Generic location detection engine** (~3 d)
+   - [ ] Refactor Phase 1 Python-only detection into the three-layer protocol (§6)
+   - [ ] Language registry: load language definitions from `augmentation_types.yml`
+   - [ ] `inherits` support for language definitions (single-level)
+   - [ ] Custom target definitions in `augmentation_types.yml`
+
+2. **Built-in language definitions** (~3 d)
+   - [ ] TypeScript / JavaScript (line `//`, JSDoc `/** */`)
+   - [ ] Java (line `//`, Javadoc `/** */`)
+   - [ ] Scala (line `//`, Scaladoc `/** */`, custom targets: `case_class`, `object`, `trait`, `val`)
+   - [ ] Terraform (hash `#`, custom targets: `resource`, `data_source`, `variable`, `output`, `module_block`)
+   - [ ] HTML / XML (xml `<!-- -->`)
+   - [ ] Markdown (xml `<!-- -->`)
+   - [ ] YAML (hash `#`)
+   - [ ] Shell (hash `#`)
+   - [ ] SQL (sql_line `--`, block `/* */`)
+   - [ ] Glue (inherited from Python)
+
+3. **Per-type scan mode** (~0.5 d)
+   - [ ] `scan-mode: per-type` configuration option
+
+4. **Cross-language parity validation** (~1 d)
+   - [ ] Validator that checks: for each type with `file_patterns` spanning multiple languages, all matched languages have compatible `comment_styles` and `targets` definitions
+   - [ ] Emit `::warning` when a type references a `target` not defined in a matched language
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-4.1 | A `Feature` type with `file_patterns: ["src/**/*.py", "src/**/*.ts"]` | Augmentor scans a mixed Python/TypeScript repo | Annotations detected in both languages using correct comment styles |
+| AC-4.2 | A Terraform language definition with custom `resource` target | `@LivDoc:Owner(team-infra)` above a `resource` block | Annotation detected and associated with the resource target |
+| AC-4.3 | A language using `inherits: python` | Scan runs | Child language inherits `comment_styles` and `targets` from Python; `extensions` are the child's own |
+| AC-4.4 | A type targeting `class` with `file_patterns` matching `.yaml` files | Config validation | `::warning` emitted: YAML language has no `class` target |
+| AC-4.5 | Phase 1 Python-only config | Loaded by Phase 4 code | All Phase 1 behavior preserved (Python detection unchanged) |
+
+---
 
 ### Phase 5 — Advanced Annotation Features (v0.5.0)
 
-- [ ] Multiline annotation detection
-- [ ] AC inner sub-values (`a`, `b`, `c` / named)
-- [ ] Value format options: `csv`, `pipe`, `repeated`, `group` (§5.8)
-- [ ] Double-quote escaping (no backslashes in values)
-- [ ] `@LivDoc:Ignore` rules (§10)
-- [ ] Multiple `augmentation_types.yml` files with separate namespaces
-- [ ] Inside/outside placement rules per type
-- [ ] Cross-language parity validation
+_Goal: Full annotation syntax support — multiline, value formats, multiple config files, placement rules._
 
-### Phase 6 — Auto-Fix (v0.6.0)
+_Estimated effort: 2–2.5 weeks._
 
-- [ ] Auto-fix regime with mandatory dry-run (§4.3)
-- [ ] Template-based annotation insertion for supported types
-- [ ] `dry-run: false` mode for CI pipelines
-- [ ] Auto-fix report in `$GITHUB_STEP_SUMMARY`
+#### Tasks
 
-### Phase 7 — AI Assistant Integration (v0.7.0)
+1. **Multiline annotations** (~2 d)
+   - [ ] Multiline annotation detection (§5.6)
+   - [ ] Key-value pair extraction for multiline annotations (`extraction_rules.key_value_pairs`)
+   - [ ] Double-quote escaping (no backslashes in values)
 
-- [ ] Agent-mode optimization (Protocol interfaces, docstring contracts)
-- [ ] `@livingdoc` chat participant prototype (VS Code)
-- [ ] `/annotate`, `/check`, `/generate-config`, `/auto-fix` commands
-- [ ] AI-assisted `augmentation_types.yml` generation
+2. **Value format options (§5.8)** (~2 d)
+   - [ ] `csv` format (already default — add explicit tests)
+   - [ ] `pipe` format: `@LivDoc:AC(AC-001 | AC-002)` — parse pipe-delimited values
+   - [ ] `repeated` format: multiple same-type annotations merged into a list
+   - [ ] `group` format: `@LivDoc:Trace(Feature=F-1, AC=AC-001)` — expand `group_members` into individual annotations
+
+3. **Multiple config files (§5.1)** (~1.5 d)
+   - [ ] Accept comma-separated `config-path` input
+   - [ ] Load multiple `augmentation_types.yml` files, each with its own `annotation_prefix`
+   - [ ] Namespace isolation: types in different prefixes can share the same `name`
+   - [ ] Validate no duplicate type names within the same namespace
+
+4. **Placement rules** (~0.5 d)
+   - [ ] Inside/outside placement rules per type (docstring vs. preceding comment)
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-5.1 | A `TechDecision` type with `multiline: true` and `key_value_pairs: true` | A multiline annotation in source | Collector extracts all `required_keys` and `optional_keys` into `extracted_data` |
+| AC-5.2 | `value_format: pipe` | `@LivDoc:AC(AC-001 \| AC-002)` | Collector output contains `["AC-001", "AC-002"]` |
+| AC-5.3 | `value_format: repeated` | Two `@LivDoc:AC(…)` on the same method | Collector merges both into a single list |
+| AC-5.4 | `value_format: group` with `group_members: [Feature, AC, TestEvidence]` | `@LivDoc:Trace(Feature=F-1, AC=AC-001)` | Collector output contains separate `Feature` and `AC` entries |
+| AC-5.5 | `config-path: "core.yml,qa.yml"` with `annotation_prefix: LivDoc` and `QA` respectively | Both define a type named `Feature` | No config error; `@LivDoc:Feature` and `@QA:Feature` are distinct types |
+| AC-5.6 | `config-path: "a.yml,b.yml"` where both use prefix `LivDoc` and both define `Feature` | Config validation | Exit code `2`; error: duplicate type `Feature` in namespace `LivDoc` |
+
+---
+
+### Phase 6 — Auto-Fix: Deterministic & AI (v0.6.0)
+
+_Goal: Both `deterministic` and `ai` auto-fix modes (§4.3) are functional._
+
+_Estimated effort: 2.5–3 weeks._
+
+> **Scope clarification:** This phase delivers **both** auto-fix modes described
+> in §4.3. Deterministic fixes use templates (§5.2.2); AI fixes use a configured
+> provider (§4.3.4) and produce `auto_fix_review.json` for human review.
+
+#### Tasks
+
+1. **Auto-fix core** (~1.5 d)
+   - [ ] Auto-fix regime entry point with mandatory `--dry-run` default (§4.3)
+   - [ ] Exit codes: `0` (no fixable violations / all fixed), `1` (fixable found / some failed), `2` (config error)
+   - [ ] Auto-fix report in `$GITHUB_STEP_SUMMARY`
+
+2. **Deterministic mode (`auto_fix: deterministic`)** (~2 d)
+   - [ ] Template-based annotation insertion using §5.2.2 tokens (`{class_name}`, `{function_name}`, etc.)
+   - [ ] Token validation at config load time (unknown tokens → exit code `2`)
+   - [ ] `dry-run: false` mode: apply changes and produce `git diff`
+
+3. **AI mode (`auto_fix: ai`)** (~3 d)
+   - [ ] AI provider configuration loader (§4.3.4: `auto_fix_ai` block)
+   - [ ] Provider abstraction: `copilot`, `claude`, `openai`, `custom` backends
+   - [ ] `auto_fix_review.json` generation (§4.3.5 schema) when `review_required: true`
+   - [ ] Per-type error handling (§4.3.7): HTTP errors, rate limits, timeouts, auth failures
+   - [ ] AI Provider Status section in `$GITHUB_STEP_SUMMARY`
+
+4. **Integration** (~1 d)
+   - [ ] Mixed runs: types with `deterministic`, `ai`, and `no` in the same config
+   - [ ] When no AI provider configured, `ai` types silently skipped with `::warning`
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-6.1 | `Feature` with `auto_fix: deterministic`, `auto_fix_template: "{class_name}"` | `regime: auto-fix`, dry-run, one unannotated class `OrderService` | Dry-run report shows: insert `@LivDoc:Feature(OrderService)` at the correct line; no files modified; exit code `1` |
+| AC-6.2 | Same as AC-6.1 | `regime: auto-fix`, `dry-run: false` | File modified with the annotation inserted; `git diff` produced; exit code `0` |
+| AC-6.3 | `AC` with `auto_fix: ai`, valid `auto_fix_ai` block | `regime: auto-fix`, dry-run | `auto_fix_review.json` produced with suggestions; status: `pending`; exit code `1` |
+| AC-6.4 | `auto_fix: ai` but no `auto_fix_ai` block configured | `regime: auto-fix` | AI types skipped; `::warning` emitted listing skipped types; deterministic types still processed |
+| AC-6.5 | AI provider returns HTTP 429 | Auto-fix with `ai` type | Retry 3× with backoff; if exhausted, type skipped; `::warning` emitted; other types unaffected |
+| AC-6.6 | `auto_fix_template: "{unknown_token}"` | Config load | Exit code `2`; error message lists invalid token and valid options |
+| AC-6.7 | Config with `deterministic`, `ai`, and `no` types | `regime: auto-fix` | `no` types skipped; deterministic applied; AI suggestions in review file; summary lists all three categories |
+
+---
+
+### Phase 7 — AI Copilot Instructions & Agent Optimization (v0.7.0)
+
+_Goal: First-class AI assistant integration **within the existing GitHub Action** — Copilot instructions, agent-mode contracts, and AI-assisted config generation._
+
+_Estimated effort: 1–1.5 weeks._
+
+> **Scope note:** The `@livingdoc` VS Code chat participant is a **separate
+> product** (distinct repository, distinct extension, distinct marketplace
+> listing). It is **out of scope** for this GitHub Action roadmap. This phase
+> covers only the AI integration points that ship as part of the action itself.
+
+#### Tasks
+
+1. **Copilot instructions** (~1 d)
+   - [ ] `.github/copilot-instructions.md` — comprehensive project context for AI assistants
+   - [ ] Protocol interfaces with rich docstring contracts for agent-mode discovery
+
+2. **AI-assisted config generation** (~2 d)
+   - [ ] `/generate-config` prompt template: given a repo scan, produce an `augmentation_types.yml`
+   - [ ] AI-assisted `augmentation_types.yml` generation (prompt engineering, output validation)
+
+3. **Agent-mode optimization** (~1 d)
+   - [ ] Stable Protocol/ABC interfaces for all public APIs
+   - [ ] Docstring contracts specifying pre/post conditions for each public method
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-7.1 | The `.github/copilot-instructions.md` file | An AI assistant opens the repo | Assistant has project context for annotation authoring and type definitions |
+| AC-7.2 | A Python repo with no `augmentation_types.yml` | AI-assisted config generation runs | A valid `augmentation_types.yml` is produced that passes Pydantic validation |
+| AC-7.3 | All public module APIs | Introspection | Every public class/function has a docstring with parameter types, return types, and pre/post conditions |
+
+---
 
 ### Phase 8 — Maturity & Marketplace (v1.0.0)
 
-- [ ] AST-based detection for Python (optional enhancement)
-- [ ] Caching for faster incremental scans
-- [ ] Configurable severity levels per violation
-- [ ] Security hardening (ReDoS protection, input sanitization)
-- [ ] Output schema versioning & backward compatibility guarantees
-- [ ] Performance benchmarks (1,000+ files/second)
-- [ ] Published to GitHub Marketplace
+_Goal: Production hardening, performance, and public release._
+
+_Estimated effort: 2–3 weeks._
+
+#### Tasks
+
+1. **AST-based detection (Python)** (~2 d)
+   - [ ] Optional AST-based detection for Python as an alternative to regex
+   - [ ] Scope: resolve ambiguous regex matches (e.g., nested classes) using `ast.parse`
+   - [ ] Fallback to regex when AST parsing fails (syntax errors in scanned files)
+
+2. **Caching (§22.3)** (~2 d)
+   - [ ] Cache scan results keyed by file content hash (SHA-256)
+   - [ ] Incremental scans: skip unchanged files using cache
+   - [ ] Cache invalidation when `augmentation_types.yml` changes
+   - [ ] Cache storage: local file (`.livdoc_cache.json`) for CI runners
+
+3. **Security & performance** (~2 d)
+   - [ ] ReDoS protection: regex complexity analysis at config load time
+   - [ ] Input sanitization for all user-provided values
+   - [ ] Performance benchmarks: target ≥ 1,000 files/second on reference hardware
+   - [ ] Configurable severity levels per violation
+
+4. **Release preparation** (~1 d)
+   - [ ] Output schema versioning & backward compatibility guarantees
+   - [ ] Published to GitHub Marketplace
+
+#### Acceptance Criteria
+
+| # | Given | When | Then |
+|---|---|---|---|
+| AC-8.1 | A Python file with nested classes | AST-based detection enabled | Inner class annotations are correctly attributed (not confused with outer class) |
+| AC-8.2 | A repo scanned twice with no file changes | Second scan with caching enabled | Second scan completes in < 10 % of first scan's time; results are identical |
+| AC-8.3 | A `augmentation_types.yml` change between two scans | Cache exists from first scan | Cache is invalidated; second scan re-processes all files |
+| AC-8.4 | A type with a catastrophic-backtracking regex pattern | Config load | Exit code `2`; error identifies the problematic pattern |
+| AC-8.5 | A repository with 5,000 Python files | Full scan | Completes within 5 seconds (≥ 1,000 files/second) |
+| AC-8.6 | Marketplace listing | User searches "living documentation" on GitHub Marketplace | Action appears with correct metadata, README, and branding |
+
+---
+
+### Out-of-Scope / Separate Projects
+
+The following items are referenced in the spec but are **separate deliverables**, not phases of this GitHub Action:
+
+| Item | Reason | Where |
+|---|---|---|
+| `@livingdoc` VS Code chat participant | Separate product: VS Code extension with its own repo, packaging, and marketplace listing | Separate repository |
+| UI rendering of living documentation | Non-goal (§2); handled by upstream consumers | N/A |
+| Language-specific AST parsing beyond Python | Future enhancement; Python AST is Phase 8; other languages are post-v1.0 | Post-v1.0 |
+
+---
 
 ### Verification Scripts
 
