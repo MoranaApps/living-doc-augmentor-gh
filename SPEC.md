@@ -41,7 +41,7 @@
 
 **Living Documentation Source Code Augmentor** (`living-doc-augmentor-gh`) is a **composite GitHub Action** written in **Python 3.14** that enriches source code with structured annotations and extracts those annotations into machine-readable output.
 
-The action operates in two distinct regimes (plus an experimental third):
+The action operates in three regimes:
 
 | Regime | Purpose |
 |---|---|
@@ -864,7 +864,7 @@ The location detection system is the core mechanism that determines **where** in
 
 ### 6.1 Design Principles
 
-- **Rule-driven:** All detection behavior is specified in `augmentation_types.yml`. Zero detection logic is language-specific in the core engine.
+- **Rule-driven:** All detection behavior is driven by configuration — the core scanning engine contains no language-specific `if`/`else` branching. The `languages.py` module provides **built-in language definitions** (comment styles, target patterns) that are loaded as data into the config-driven engine; they are default entries in the language registry, not hard-coded logic. User-defined language entries in `augmentation_types.yml` are treated identically to built-in ones.
 - **Composable scoping:** File-level globs, code-structure targets, and comment-style awareness combine independently.
 - **Multi-language:** Comment extraction supports Python, TypeScript/JavaScript, Java, C#, Go, Rust, and any language with configurable comment delimiters.
 - **Extensible:** Users (and Copilot) can add custom location matchers without modifying the scanner core.
@@ -1462,6 +1462,8 @@ class OrderService:
 | **CoverageExclusion** | `@LivDoc:CoverageExclusion(reason)` | `function`, `class` | Coverage Report | QA | Documents why code is excluded from coverage |
 | **BDDKeywords** | `@LivDoc:BDDKeywords(PageObject: action1, action2, ...)` | `module` | BDD Keyword Catalogue | QA | Lists available BDD actions/keywords per page object for Gherkin scenario authoring |
 
+> **Note:** `BDDStep` (documenting individual step definitions) is listed in §8.8 Living Documentation Links, not here. `BDDKeywords` is a **module-level summary** of all available keywords per PageObject; `BDDStep` is a **method-level** annotation on individual step definitions.
+
 **Example:**
 
 ```python
@@ -1876,7 +1878,7 @@ export class ClientOnboardingOrchestrator { /* ... */ }
 | Category | Types | Primary Audience |
 |---|---|---|
 | Requirements & Traceability | `Feature`, `UserStory`, `Requirement`, `AC`, `Epic` | Business |
-| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `TestData`, `CoverageExclusion`, `BDDKeywords` | QA |
+| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `BDDKeywords`, `TestData`, `CoverageExclusion` | QA |
 | Architecture & Design | `ADR`, `ArchDecision`, `DesignPattern`, `Layer`, `Component`, `BoundedContext`, `Aggregate`, `DomainEvent` | Architecture |
 | API & Contracts | `Endpoint`, `Contract`, `DataModel`, `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType` | Technical |
 | Ownership & Operations | `Owner`, `SLA`, `Runbook`, `Alert`, `AlertRule`, `Stakeholder`, `Tier` | Operations |
@@ -2568,7 +2570,7 @@ living-doc-augmentor-gh/
 │   ├── review.py                         # Review file generator (auto_fix_review.json)
 │   ├── ignore.py                         # @LivDoc:Ignore logic
 │   ├── location.py                       # Location detection system & matchers
-│   ├── languages.py                      # Language-specific comment/target definitions
+│   ├── languages.py                      # Built-in language definitions (comment styles, target patterns) — loaded as data, not hard-coded logic
 │   └── utils.py                          # Shared utilities
 ├── tests/
 │   ├── unit/
@@ -2960,14 +2962,23 @@ def test_place_order_creates_record(order_service, sample_cart):
 
 **BDD keyword catalogue per PageObject:**
 
-```gherkin
-# features/order.feature
+> **Note:** `@LivDoc:BDDKeywords` is placed in the **PageObject source file** (Python, TypeScript, etc.), not in a `.feature` file. Gherkin's `#` lines are parser comments — ignored entirely — and cannot carry annotations. The annotation lives on the `module` target of the PageObject implementation:
+
+```python
+# pages/order_page.py
 # @LivDoc:BDDKeywords(OrderPage: place_order, verify_total, apply_discount)
-Feature: Order management
-  Scenario: Place a new order
-    Given the user is on the OrderPage
-    When  the user calls place_order
-    Then  the order total matches verify_total
+
+class OrderPage:
+    """Page object for the order screen."""
+
+    def place_order(self, cart):
+        ...
+
+    def verify_total(self, expected):
+        ...
+
+    def apply_discount(self, code):
+        ...
 ```
 
 ### 23.3 Architecture (Layer, Component, ArchDecision)
@@ -3559,6 +3570,7 @@ open htmlcov/index.html
 | AI Provider | A configured AI service (`copilot`, `claude`, `openai`, `custom`) used by the `auto_fix: ai` mode to generate annotation values. Configured via the `auto_fix_ai` block in `augmentation_types.yml` (see §4.3.4) |
 | Annotation | A structured comment/tag in source code following the `@LivDoc:<Type>(value)` convention |
 | Annotation Group | A `group` value format that packs multiple annotation types into a single tag, e.g., `@LivDoc:Trace(Feature=F-1, AC=AC-001)` |
+| Annotation Prefix | The string (e.g., `LivDoc`, `QA`, `Arch`) defined by `annotation_prefix` in a config file. Automatically prepended to type names to form the full tag: `@<prefix>:<name>`. Each config file's prefix creates a separate namespace (see §5.1, §9.1) |
 | Augmentation | The process of enriching source code with structured annotations for living documentation |
 | Augmentation Catalogue | A collection of pre-defined augmentation type definitions for common IT project documentation needs |
 | Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
