@@ -5,8 +5,6 @@
 > **Version:** 0.1.0-draft  
 > **Date:** 2026-02-19  
 > **Status:** Draft  
-> **Source Inspiration:** [MoranaApps/liv_doc_poc — docs/SPEC.md (M5 — Source Code Augmentor)](https://github.com/MoranaApps/liv_doc_poc/blob/master/docs/SPEC.md)  
-> **Reference Implementation:** [AbsaOSS/generate-release-notes](https://github.com/AbsaOSS/generate-release-notes)
 
 ---
 
@@ -38,10 +36,8 @@ The action operates in two distinct regimes:
 
 | Regime | Purpose |
 |---|---|
-| **Augmentor** | Validates that source code annotations conform to defined augmentation types and placement rules |
+| **Augmentor** | Search for location without annotations and report violations based on user-defined augmentation types and rules. Runs in PR mode (changed files only) or full-scan mode (entire repository). |
 | **Collector** | Extracts all augmented data from source code into a structured JSON output for upstream consumption |
-
-The concept originates from the *M5 — Source Code Augmentor (Enrichment)* milestone in the [Living Documentation PoC specification](https://github.com/MoranaApps/liv_doc_poc/blob/master/docs/SPEC.md), adapted here as a standalone, reusable GitHub Action.
 
 ---
 
