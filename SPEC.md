@@ -40,12 +40,13 @@
 
 **Living Documentation Source Code Augmentor** (`living-doc-augmentor-gh`) is a **composite GitHub Action** written in **Python 3.14** that enriches source code with structured annotations and extracts those annotations into machine-readable output.
 
-The action operates in two distinct regimes:
+The action operates in two distinct regimes (plus an experimental third):
 
 | Regime | Purpose |
 |---|---|
 | **Augmentor** | Search for location without annotations and report violations based on user-defined augmentation types and rules. Runs in PR mode (changed files only) or full-scan mode (entire repository). |
 | **Collector** | Extracts all augmented data from source code into a structured JSON output for upstream consumption |
+| **Auto-Fix** _(experimental)_ | Automatically insert missing annotations for types that support deterministic derivation. Always dry-run by default. |
 
 ---
 
@@ -54,7 +55,7 @@ The action operates in two distinct regimes:
 ### Goals
 
 - **G1:** Provide a composite GitHub Action (Python 3.14) for augmenting and collecting structured annotations from source code.
-- **G2:** Support two regimes — **augmentor** (validation) and **collector** (extraction).
+- **G2:** Support three regimes — **augmentor** (validation), **collector** (extraction), and **auto-fix** (experimental — deterministic insertion of missing annotations with dry-run by default).
 - **G3:** Allow user-defined augmentation types with configurable rules for placement and detection.
 - **G4:** Provide a **generic, language-agnostic solution** where all detection behavior is driven by flexible, user-defined rules — not hard-coded to any single framework or language.
 - **G5:** Implement a **flexible location detection system** with composable target scoping rules (file globs, code structure targets, comment-style awareness) that can adapt to any project convention.
@@ -184,6 +185,65 @@ The **collector** extracts all augmented data from source code into a structured
 - **Output:** `code_augmentations.json` — structured JSON with all extracted annotations, grouped by type and source file.
 - **Use case:** Feed augmented metadata into upstream processes (living documentation builders, dashboards, reports).
 
+### 4.3 Auto-Fix Regime (Experimental)
+
+The **auto-fix** regime can automatically insert missing annotations into source code for types that support it.
+
+> **Dry-run by default.** Auto-fix always runs in `--dry-run` mode unless
+> explicitly overridden with `dry-run: false`. In dry-run mode, the action
+> reports **what it would change** without modifying any files.
+
+#### 4.3.1 Supported Types
+
+Not every augmentation type supports auto-fix. A type is auto-fixable when:
+
+- The annotation value can be **deterministically derived** from context (e.g., a class name, file path, or configured template).
+- The type has `auto_fix: true` in its configuration.
+
+| Auto-fixable | Example | Derivation strategy |
+|---|---|---|
+| `Feature` | `@LivDoc:Feature(class_name)` | Use class name as placeholder ID |
+| `Owner` | `@LivDoc:Owner(CODEOWNERS)` | Read from `CODEOWNERS` file |
+| `ModuleDescription` | `@LivDoc:ModuleDescription(name=...)` | Use module docstring first line |
+| `Tier` | `@LivDoc:Tier(tier-3)` | Default tier from config |
+
+| Not auto-fixable | Reason |
+|---|---|
+| `AC` | Sub-values require human judgement |
+| `Decision` | Rationale, alternatives require human input |
+| `Glossary` | Definition requires domain knowledge |
+| `TestEvidence` | Mapping to requirements requires human triage |
+
+#### 4.3.2 Auto-Fix Configuration
+
+```yaml
+types:
+  - name: Feature
+    target: class
+    required: true
+    auto_fix: true
+    auto_fix_template: "@LivDoc:Feature({class_name})"  # placeholder tokens
+    file_patterns:
+      - "src/**/*.py"
+```
+
+#### 4.3.3 Auto-Fix Output
+
+| Output | Description |
+|---|---|
+| **Dry-run report** | List of files, lines, and proposed insertions (always produced) |
+| **Modified files** | Actual file modifications (only when `dry-run: false`) |
+| **`$GITHUB_STEP_SUMMARY`** | Summary of fixes applied / proposed |
+| **Git diff** | When `dry-run: false`, produces a `git diff` of all changes |
+
+#### 4.3.4 Auto-Fix Exit Codes
+
+| Exit Code | Meaning |
+|---|---|
+| `0` | Dry-run: no fixable violations; Apply: all fixes applied successfully |
+| `1` | Dry-run: fixable violations found (report produced); Apply: some fixes failed |
+| `2` | Configuration error |
+
 ---
 
 ## 5. Augmentation Type System
@@ -210,12 +270,16 @@ Each file defines its own `annotation_prefix`. The prefix is **automatically pre
 | `description` | `string` | no | Human-readable description |
 | `extraction_rules` | `object` | no | Rules for extracting structured data from the annotation body |
 | `severity` | `enum` | no | Violation severity when missing: `error`, `warning`, `info` (default: `error`) |
-| `multi_value` | `boolean` | no | Whether the annotation accepts comma-separated values (default: `false`) |
-| `multiline` | `boolean` | no | Whether the annotation body can span multiple lines (default: `false`) |
+| `multi_value` | `boolean` | no | Whether the annotation accepts multiple values (default: `false`). See §5.5 for format options. |
+| `sub_values` | `object` | no | Defines named sub-criteria within a value (e.g., AC sub-items `a`, `b`, `c`). See §5.5. |
+| `value_format` | `enum` | no | Value syntax: `csv` (default), `pipe`, `repeated`, `group`. See §5.8. |
+| `multiline` | `boolean` | no | Whether the annotation body can span multiple lines (default: `false`). See §5.6. |
 | `deprecated` | `boolean` | no | Mark as deprecated — still collected but violations become warnings (default: `false`) |
 | `target_document` | `string` | no | The intended downstream document this annotation feeds (e.g., `Technical Design`, `Test Report`, `API Reference`) |
 | `audience` | `enum` | no | Primary audience: `technical`, `business`, `qa`, `architecture`, `operations`, `security` |
 | `pattern` | `string` (regex) | no | **Override** — custom regex if the auto-generated pattern is insufficient |
+| `auto_fix` | `boolean` | no | Whether the auto-fix regime can insert this annotation automatically (default: `false`) |
+| `auto_fix_template` | `string` | no | Template for auto-generated annotation value. Supports tokens: `{class_name}`, `{file_name}`, `{module_name}` |
 
 ### 5.3 Annotation Placement — Inside vs. Outside the Object
 
@@ -245,7 +309,9 @@ Both are validated identically by the augmentor and produce identical collector 
 
 ### 5.5 Multi-Value Annotations — Documentation Fragments in Place
 
-The `multi_value: true` property allows a single annotation to carry multiple comma-separated values. The design intent is to **keep documentation fragments as close as possible to the code they describe** — co-locating metadata with its reason-of-existence:
+The `multi_value: true` property allows a single annotation to carry multiple values. The design intent is to **keep documentation fragments as close as possible to the code they describe** — co-locating metadata with its reason-of-existence.
+
+#### Simple multi-value (comma-separated)
 
 ```python
 def place_order(self, cart: Cart) -> Order:
@@ -257,9 +323,59 @@ def place_order(self, cart: Cart) -> Order:
 
 Rather than maintaining a separate mapping file, the developer declares all related identifiers inline.
 
+#### AC with inner sub-values (sub-criteria)
+
+Acceptance criteria often have **inner checkpoints** — individual fields, conditions, or steps that must be satisfied. The `sub_values` property lets you define these with unique sub-IDs:
+
+```python
+def checkout(self, cart: Cart, payment: Payment) -> Order:
+    """
+    @LivDoc:AC(AC-ORD-001[
+        a: Validate all required fields are filled,
+        b: Calculate total including tax,
+        c: Verify payment method is active
+    ])
+    @LivDoc:AC(AC-ORD-002[
+        shipping_validation: Validate shipping address format,
+        weight_check: Ensure total weight within carrier limits
+    ])
+    """
+    ...
+```
+
+Sub-values can use **letter IDs** (`a`, `b`, `c`) or **named IDs** (`shipping_validation`, `weight_check`). The collector extracts each sub-value as a separate entry linked to its parent AC.
+
+Configuration for sub-values:
+
+```yaml
+types:
+  - name: AC
+    target: method
+    required: false
+    multi_value: true
+    sub_values:
+      id_style: auto       # 'auto' (a/b/c), 'named', or 'both'
+      separator: ","        # delimiter between sub-items
+      bracket: "[]"         # bracket style: '[]', '{}', or '()'
+    file_patterns:
+      - "src/**/*.py"
+      - "tests/**/*.py"
+```
+
 ### 5.6 Multiline Annotations
 
-When `multiline: true`, the annotation body can span multiple lines. The body starts after the opening `(` and ends at the matching `)`. This is useful for types that carry longer documentation fragments:
+When `multiline: true`, the annotation body can span multiple lines. The body starts after the opening `(` and ends at the matching `)`. This is useful for types that carry longer documentation fragments.
+
+#### No-backslash rule — use quoting for special characters
+
+Commas and parentheses inside free-text values **must not** be escaped with backslashes. Instead, use **double-quotes** around values that contain commas or special characters:
+
+| Need | ❌ Avoid | ✅ Preferred |
+|---|---|---|
+| Comma in text | `alternatives=Adyen\, Braintree` | `alternatives="Adyen, Braintree"` |
+| Parentheses | `scope=Module (core)` needs no quoting (inner parens are fine inside outer `()` when unambiguous) | `scope="Module (core)"` if ambiguous |
+
+The parser rule: **if a value is wrapped in `"…"`, the content is taken verbatim** (no comma splitting). Un-quoted values are split on `,`.
 
 ```python
 class OrderService:
@@ -268,6 +384,7 @@ class OrderService:
         type=technology,
         title=Use PostgreSQL for order storage,
         rationale=ACID compliance required for financial transactions,
+        alternatives="RabbitMQ, AWS SQS, Azure Service Bus",
         date=2026-01-15,
         status=accepted
     )
@@ -305,10 +422,14 @@ types:
     target: method
     required: false
     multi_value: true
+    sub_values:
+      id_style: both      # supports 'a/b/c' and named sub-IDs
+      separator: ","
+      bracket: "[]"
     file_patterns:
       - "src/**/*.py"
       - "tests/**/*.py"
-    description: "Links a method to acceptance criteria."
+    description: "Links a method to acceptance criteria. Supports inner sub-values."
     target_document: "Acceptance Criteria Report"
     audience: qa
 
@@ -366,6 +487,56 @@ types:
 ```
 
 > **Note:** The `tag` and `pattern` fields are **not present** — they are auto-derived from `annotation_prefix` + `name`. If a type needs a non-standard pattern (e.g., multiline with key-value syntax), provide an explicit `pattern` override.
+
+### 5.8 Value Format Options
+
+Different annotation use-cases require different value formats. The `value_format` property selects one:
+
+| Format | Syntax Example | When to use |
+|---|---|---|
+| `csv` (default) | `@LivDoc:AC(AC-001, AC-002)` | Simple ID lists |
+| `pipe` | `@LivDoc:AC(AC-001 \| AC-002)` | When values themselves contain commas |
+| `repeated` | Two separate `@LivDoc:AC(AC-001)` and `@LivDoc:AC(AC-002)` on the same target | When each value needs its own line / context |
+| `group` | `@LivDoc:Trace(Feature=F-1, AC=AC-001, Test=T-01)` | Multiple annotation types under one prefix |
+
+#### `repeated` — multiple annotations of the same type
+
+When `value_format: repeated`, the scanner collects **all** annotations of the same type on a single target and merges them:
+
+```python
+def place_order(self, cart: Cart) -> Order:
+    """
+    @LivDoc:AC(AC-ORD-001 — Validate required fields)
+    @LivDoc:AC(AC-ORD-002 — Calculate total with tax)
+    @LivDoc:AC(AC-ORD-003 — Verify payment method)
+    """
+    ...
+```
+
+This is the **preferred format when the annotation value includes free text** (descriptions, titles) because it avoids the need for comma escaping entirely.
+
+#### `group` — multiple annotation types under one prefix
+
+The `group` format packs several logically related types into a single annotation. The scanner expands the group into individual annotations:
+
+```python
+def place_order(self, cart: Cart) -> Order:
+    """
+    @LivDoc:Trace(Feature=ORD-001, AC=AC-ORD-001, Test=T-ORD-001)
+    """
+    ...
+```
+
+This is syntactic sugar — the collector output is identical to three separate annotations. Define a group type:
+
+```yaml
+types:
+  - name: Trace
+    target: any
+    value_format: group
+    group_members: [Feature, AC, TestEvidence]
+    file_patterns: ["src/**/*.py", "tests/**/*.py"]
+```
 
 ---
 
@@ -823,7 +994,7 @@ class PaymentProcessor:
         type=library,
         title=Use Stripe SDK for payment processing,
         rationale=Best-in-class API reliability and PCI compliance,
-        alternatives=Adyen\, Braintree,
+        alternatives="Adyen, Braintree",
         date=2026-01-20,
         status=accepted
     )
@@ -865,7 +1036,7 @@ This section provides a comprehensive catalogue of augmentation types commonly n
 | **Feature** | `@LivDoc:Feature(ID)` | `class` | Feature Matrix | Business | Links code to a feature in the feature registry / backlog |
 | **UserStory** | `@LivDoc:UserStory(ID)` | `class`, `method` | User Story Map | Business | Traces code to a user story (e.g., Jira, Azure DevOps) |
 | **Requirement** | `@LivDoc:Requirement(ID)` | `any` | Requirements Traceability Matrix | Business | Links to a formal requirement (e.g., DOORS, ReqIF) |
-| **AC** | `@LivDoc:AC(ID, ...)` | `method` | Acceptance Criteria Report | QA | Maps to acceptance criteria — supports multiple values |
+| **AC** | `@LivDoc:AC(ID, ...)` or `@LivDoc:AC(ID[a: ..., b: ...])` | `method` | Acceptance Criteria Report | QA | Maps to acceptance criteria — supports multiple values and inner sub-criteria |
 | **Epic** | `@LivDoc:Epic(ID)` | `module`, `class` | Epic Overview | Business | Groups code under a high-level epic |
 
 **Example:**
@@ -884,7 +1055,12 @@ class OrderService:
         """
         Place a new order from the shopping cart.
 
-        @LivDoc:AC(AC-ORD-001, AC-ORD-002)
+        @LivDoc:AC(AC-ORD-001[
+            a: Validate all required fields,
+            b: Calculate total with tax,
+            c: Reserve inventory
+        ])
+        @LivDoc:AC(AC-ORD-002)
         @LivDoc:Requirement(REQ-ORD-PLACE-001)
         """
         ...
@@ -1140,13 +1316,14 @@ class EventBus:
         type=technology,
         title=Use Apache Kafka for event streaming,
         rationale=High throughput and exactly-once semantics required for order events,
-        alternatives=RabbitMQ\, AWS SQS,
+        alternatives="RabbitMQ, AWS SQS",
         date=2026-01-15,
         status=accepted
     )
     @LivDoc:TechChoice(Apache Kafka)
     """
     ...
+```
 ```
 
 ### 8.10 Glossary & Domain Terms
@@ -1213,7 +1390,7 @@ class Money:
 ```markdown
 <!-- @LivDoc:ProjectDescription(
     name=Order Management Service,
-    purpose=Microservice handling order placement\, tracking\, and fulfillment,
+    purpose="Microservice handling order placement, tracking, and fulfillment",
     team=team-orders,
     tier=tier-1
 ) -->
@@ -1316,7 +1493,7 @@ To ignore all violations for an entire file, place at the top of the file:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `regime` | yes | — | Operating mode: `augmentor` or `collector` |
+| `regime` | yes | — | Operating mode: `augmentor`, `collector`, or `auto-fix` |
 | `config-path` | no | `augmentation_types.yml` | Comma-separated list of augmentation types config files |
 | `scan-mode` | no | `pr` | Augmentor scan mode: `pr`, `full`, or `per-type` |
 | `augmentation-type` | no | — | When `scan-mode: per-type`, the specific type to check |
@@ -1325,6 +1502,7 @@ To ignore all violations for an entire file, place at the top of the file:
 | `output-path` | no | `code_augmentations.json` | Output file path for the collector regime |
 | `fail-on-violations` | no | `true` | Whether the augmentor should fail the workflow on violations |
 | `verbose` | no | `false` | Enable verbose/debug logging |
+| `dry-run` | no | `true` | Auto-fix regime: preview changes without modifying files |
 
 ### Outputs
 
@@ -1444,7 +1622,7 @@ author: 'MoranaApps'
 
 inputs:
   regime:
-    description: 'Operating mode: augmentor or collector'
+    description: 'Operating mode: augmentor, collector, or auto-fix'
     required: true
   config-path:
     description: 'Comma-separated list of augmentation types config files'
@@ -1478,6 +1656,10 @@ inputs:
     description: 'Enable verbose logging'
     required: false
     default: 'false'
+  dry-run:
+    description: 'Auto-fix regime: preview changes without modifying files'
+    required: false
+    default: 'true'
 
 outputs:
   violations-count:
@@ -1520,6 +1702,7 @@ runs:
         INPUT_OUTPUT_PATH: ${{ inputs.output-path }}
         INPUT_FAIL_ON_VIOLATIONS: ${{ inputs.fail-on-violations }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
+        INPUT_DRY_RUN: ${{ inputs.dry-run }}
       run: |
         cd ${{ github.action_path }}
         python main.py
@@ -1678,9 +1861,16 @@ A `Makefile` (with a thin wrapper `scripts/run_qa.sh` for CI parity) runs **ever
 gate locally so developers never need to push just to see CI results:
 
 ```makefile
-.PHONY: qa lint typecheck fmt complexity test audit
+.PHONY: qa qa-parallel lint typecheck fmt complexity test audit
 
-qa: lint typecheck fmt complexity test audit  ## Run ALL quality gates
+qa: lint typecheck fmt complexity test audit  ## Run ALL quality gates (sequential)
+
+qa-parallel:  ## Run independent gates in parallel
+	@echo "Running lint, typecheck, fmt, complexity in parallel..."
+	$(MAKE) -j4 lint typecheck fmt complexity
+	@echo "Running tests (sequential — needs clean state)..."
+	$(MAKE) test
+	$(MAKE) audit
 
 lint:
 	pylint living_doc_augmentor
@@ -1703,10 +1893,15 @@ audit:
 ```
 
 ```bash
-# Quick one-liner
+# Sequential (safe default)
 make qa
+
+# Parallel (faster — lint, typecheck, fmt, complexity run simultaneously)
+make qa-parallel
+
 # …or via wrapper (same thing, used in CI)
-./scripts/run_qa.sh
+./scripts/run_qa.sh          # sequential
+./scripts/run_qa.sh --parallel  # parallel
 ```
 
 ---
@@ -2056,10 +2251,18 @@ class OrderService:
     def place_order(self, cart: Cart) -> Order:
         """Place an order from a shopping cart.
 
-        @LivDoc:AC(ORD-001-AC-02)
+        AC with inner sub-values (checklist-style):
 
-        Multi-value: a single method may satisfy several acceptance criteria.
-        The documentation fragment lives close to the code that fulfils it.
+        @LivDoc:AC(AC-ORD-001[
+            a: Validate all required form fields,
+            b: Calculate total including tax,
+            c: Reserve inventory for selected items
+        ])
+
+        Repeated format (one AC per line with description):
+
+        @LivDoc:AC(AC-ORD-002 — Verify payment method is active)
+        @LivDoc:AC(AC-ORD-003 — Send confirmation email)
         """
         ...
 ```
@@ -2233,11 +2436,16 @@ The **same** logical annotation in different languages:
 
 ## 23. Roadmap
 
-> **Granular iterations.** Each phase is scoped to ≤ 2 weeks of work for a
-> single contributor. Every milestone ships with **≥ 95 % test coverage** and
-> a passing `make qa` run.
+> **POC-first delivery.** The goal is to ship a **usable proof-of-concept as
+> fast as possible** and then iterate with backward-compatible improvements.
+> Feature completeness (all types, all languages) is prioritised **before** AI
+> assistant integration. Each phase is scoped to ≤ 2 weeks of work for a single
+> contributor. Every milestone ships with **≥ 95 % test coverage** and a
+> passing `make qa` run.
 
-### Phase 1 — Scaffold & Core (v0.1.0)
+### Phase 1 — POC: Scaffold & Core (v0.1.0) 🚀
+
+_Goal: A working end-to-end action that can scan Python files and report violations._
 
 - [ ] Repository scaffolding: `Makefile`, `scripts/run_qa.sh`, CI workflows (`workflow_dispatch`)
 - [ ] `.github/dependabot.yml` for dependency updates
@@ -2247,9 +2455,11 @@ The **same** logical annotation in different languages:
 - [ ] Augmentor regime — full scan mode, exit codes 0/1/2
 - [ ] Collector regime — JSON output (`code_augmentations.json`)
 - [ ] `action.yml` composite action definition
+- [ ] Basic types: `Feature`, `AC` (simple), `TestEvidence`
 - [ ] Unit tests ≥ 95 % coverage; `make qa` green
+- [ ] README with quickstart example
 
-### Phase 2 — PR Integration (v0.2.0)
+### Phase 2 — PR Mode & Reporting (v0.2.0)
 
 - [ ] PR diff parsing for PR mode (changed-files-only)
 - [ ] GitHub Actions annotations for violations (`::error`, `::warning`)
@@ -2257,7 +2467,23 @@ The **same** logical annotation in different languages:
 - [ ] Integration tests with sample repository fixture
 - [ ] Example workflows (PR check, full scan, collector)
 
-### Phase 3 — Multi-Language & Location Detection (v0.3.0)
+### Phase 3 — Full Type Catalogue (v0.3.0)
+
+_Goal: All §8 augmentation categories available out of the box._
+
+- [ ] Requirements & Traceability: `Feature`, `UserStory`, `Requirement`, `AC` (with sub-values), `Epic`
+- [ ] Testing & Quality: `TestEvidence`, `TestCategory`, `PageObject`, `BDDStep`, `TestData`, `CoverageExclusion`
+- [ ] Architecture & Design: `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent`
+- [ ] API & Contracts: `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType`
+- [ ] Ownership & Operations: `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier`
+- [ ] Lifecycle & Deprecation: `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide`
+- [ ] Security & Compliance: `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel`
+- [ ] Living Documentation: `GherkinScenario`, `GherkinFeature`, `BDDStep`, `SpecFlowBinding`
+- [ ] Decisions: `Decision`, `TechChoice`
+- [ ] Glossary, Domain Objects, Project Descriptions
+- [ ] `examples/augmentation_types_full.yml` with all types
+
+### Phase 4 — Multi-Language & Location Detection (v0.4.0)
 
 - [ ] Generic location detection system (§6) — three composable layers
 - [ ] Language-configurable target patterns: Python, TypeScript, Java, Scala
@@ -2265,32 +2491,32 @@ The **same** logical annotation in different languages:
 - [ ] Custom target definitions in `augmentation_types.yml`
 - [ ] Per-type scan mode (`scan-mode: per-type`)
 
-### Phase 4 — Advanced Features (v0.4.0)
+### Phase 5 — Advanced Annotation Features (v0.5.0)
 
 - [ ] Multiline annotation detection
+- [ ] AC inner sub-values (`a`, `b`, `c` / named)
+- [ ] Value format options: `csv`, `pipe`, `repeated`, `group` (§5.8)
+- [ ] Double-quote escaping (no backslashes in values)
 - [ ] `@LivDoc:Ignore` rules (§10)
 - [ ] Multiple `augmentation_types.yml` files with separate namespaces
 - [ ] Inside/outside placement rules per type
 - [ ] Cross-language parity validation
-- [ ] Augmentation type catalogue examples shipped in `examples/`
 
-### Phase 5 — AI Assistant Integration (v0.5.0)
+### Phase 6 — Auto-Fix (v0.6.0)
+
+- [ ] Auto-fix regime with mandatory dry-run (§4.3)
+- [ ] Template-based annotation insertion for supported types
+- [ ] `dry-run: false` mode for CI pipelines
+- [ ] Auto-fix report in `$GITHUB_STEP_SUMMARY`
+
+### Phase 7 — AI Assistant Integration (v0.7.0)
 
 - [ ] Agent-mode optimization (Protocol interfaces, docstring contracts)
 - [ ] `@livingdoc` chat participant prototype (VS Code)
 - [ ] `/annotate`, `/check`, `/generate-config`, `/auto-fix` commands
 - [ ] AI-assisted `augmentation_types.yml` generation
 
-### Phase 6 — New Augmentation Categories (v0.6.0)
-
-- [ ] Decisions (TechDecision, LibDecision, BusinessDecision)
-- [ ] Glossary annotations
-- [ ] Domain Object annotations
-- [ ] Project Description annotations
-- [ ] BDD keyword catalogue per PageObject
-- [ ] Target Document & Audience metadata per category
-
-### Phase 7 — Maturity & Marketplace (v1.0.0)
+### Phase 8 — Maturity & Marketplace (v1.0.0)
 
 - [ ] AST-based detection for Python (optional enhancement)
 - [ ] Caching for faster incremental scans
@@ -2305,8 +2531,9 @@ The **same** logical annotation in different languages:
 Each phase ships with:
 
 ```bash
-# 1. Full local QA
+# 1. Full local QA (sequential or parallel)
 make qa
+make qa-parallel
 
 # 2. Smoke-test the action locally (act or nektos/act)
 act -j augmentor-check --secret-file .env
@@ -2322,11 +2549,14 @@ open htmlcov/index.html
 
 | Term | Definition |
 |---|---|
+| AC Sub-Value | A named or lettered checkpoint within an `@LivDoc:AC` annotation, e.g., `a: Validate required fields` |
 | Annotation | A structured comment/tag in source code following the `@LivDoc:<Type>(value)` convention |
+| Annotation Group | A `group` value format that packs multiple annotation types into a single tag, e.g., `@LivDoc:Trace(Feature=F-1, AC=AC-001)` |
 | Augmentation | The process of enriching source code with structured annotations for living documentation |
 | Augmentation Catalogue | A collection of pre-defined augmentation type definitions for common IT project documentation needs |
 | Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
 | Augmentor | The regime that validates annotations conform to defined rules |
+| Auto-Fix | An experimental regime (§4.3) that inserts missing annotations for types with deterministic derivation templates |
 | Auto-Prefix | When a config file sets `prefix`, the tag `@LivDoc:<Prefix><Name>` is derived automatically — no need to repeat the prefix in each type's `name` |
 | Chat Participant | A VS Code extension that registers a custom `@` mention in an AI assistant chat for domain-specific assistance |
 | Collector | The regime that extracts all annotations into structured JSON |
@@ -2335,6 +2565,7 @@ open htmlcov/index.html
 | Decision (annotation) | A `@LivDoc:*Decision` annotation capturing a technology, library, or business decision close to the code it affects |
 | Detection Strategy | A pluggable algorithm for finding annotations in source code |
 | Domain Object | A `@LivDoc:DomainObject` annotation documenting an entity, aggregate, or value object from the domain model |
+| Dry-Run | A mode where auto-fix reports proposed changes without modifying files (the default for auto-fix) |
 | Glossary (annotation) | A `@LivDoc:Glossary` annotation defining a term in the project's ubiquitous language |
 | Ignore Rule | A `@LivDoc:Ignore` or `@LivDoc:Ignore(<Type>)` annotation that suppresses augmentor violations for a file, class, or function |
 | AI Assistant Instructions | A `.github/copilot-instructions.md` file that provides project-specific context to AI coding assistants |
@@ -2346,4 +2577,5 @@ open htmlcov/index.html
 | Project Description | A `@LivDoc:ProjectDescription` annotation documenting a repository's purpose, scope, and boundaries |
 | Scoping Layer | One of the three composable layers in the location detection system: file selection, code structure targets, comment style awareness |
 | Target Document | The downstream document (wiki page, handbook, report) that a particular annotation category feeds into |
+| Value Format | The syntax convention for annotation values: `csv`, `pipe`, `repeated`, or `group` (§5.8) |
 
