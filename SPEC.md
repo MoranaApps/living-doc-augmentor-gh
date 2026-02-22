@@ -21,18 +21,19 @@
 9. [Configuration](#9-configuration)
 10. [Ignore Rules](#10-ignore-rules)
 11. [Action Inputs & Outputs](#11-action-inputs--outputs)
-12. [Collector Output Schema](#12-collector-output-schema)
-13. [GitHub Action Definition (action.yml)](#13-github-action-definition-actionyml)
-14. [Example Workflows](#14-example-workflows)
-15. [Quality Gates](#15-quality-gates)
-16. [Repository Structure](#16-repository-structure)
-17. [AI Assistant Integration](#17-ai-assistant-integration)
-18. [Error Reporting & Diagnostics](#18-error-reporting--diagnostics)
-19. [Versioning & Compatibility](#19-versioning--compatibility)
-20. [Security Considerations](#20-security-considerations)
-21. [Performance & Scalability](#21-performance--scalability)
-22. [Tutorial — Full Augmentation Examples](#22-tutorial--full-augmentation-examples)
-23. [Roadmap](#23-roadmap)
+12. [CLI & Local Usage](#12-cli--local-usage)
+13. [Collector Output Schema](#13-collector-output-schema)
+14. [GitHub Action Definition (action.yml)](#14-github-action-definition-actionyml)
+15. [Example Workflows](#15-example-workflows)
+16. [Quality Gates](#16-quality-gates)
+17. [Repository Structure](#17-repository-structure)
+18. [AI Assistant Integration](#18-ai-assistant-integration)
+19. [Error Reporting & Diagnostics](#19-error-reporting--diagnostics)
+20. [Versioning & Compatibility](#20-versioning--compatibility)
+21. [Security Considerations](#21-security-considerations)
+22. [Performance & Scalability](#22-performance--scalability)
+23. [Tutorial — Full Augmentation Examples](#23-tutorial--full-augmentation-examples)
+24. [Roadmap](#24-roadmap)
 
 ---
 
@@ -138,9 +139,36 @@ The **augmentor** validates that source code annotations conform to the defined 
 #### 4.1.1 PR Mode (Automatic in Pull Requests)
 
 - **Trigger:** Runs automatically on `pull_request` events.
-- **Scope:** Only files changed in the PR (determined from the PR diff).
+- **Scope:** Only files changed in the PR.
 - **Behavior:** Checks whether changed files comply with required annotation rules. Reports violations as PR check annotations (GitHub Actions annotations / PR review comments).
 - **Use case:** Continuous validation — ensures every PR maintains augmentation standards.
+
+##### Changed File Detection Strategy
+
+The PR mode determines changed files using a two-tier approach:
+
+| Priority | Method | When Used |
+|---|---|---|
+| 1 | **GitHub REST API** (`GET /repos/{owner}/{repo}/pulls/{pull_number}/files`) | When running inside GitHub Actions with a valid `GITHUB_TOKEN` and `pull_request` event context |
+| 2 | **`git diff`** (`git diff --name-only --diff-filter=ACMR <base_ref>...<head_ref>`) | Fallback when the GitHub API is unavailable (local runs, self-hosted runners without token) |
+
+**Base & head ref resolution:**
+
+- In GitHub Actions: `base_ref` = `${{ github.event.pull_request.base.sha }}`, `head_ref` = `${{ github.event.pull_request.head.sha }}`.
+- In local / CLI mode: `base_ref` defaults to `origin/main` (configurable via `--base-ref`), `head_ref` defaults to `HEAD`.
+- The checkout must use `fetch-depth: 0` (full history) for `git diff` to work correctly.
+
+**File status handling:**
+
+| File Status | Scanned? | Notes |
+|---|---|---|
+| Added (`A`) | ✅ Yes | New file — scanned in full |
+| Modified (`M`) | ✅ Yes | Changed file — scanned in full (not just changed lines) |
+| Copied (`C`) | ✅ Yes | Treated as a new file at the destination path |
+| Renamed (`R`) | ✅ Yes | Scanned at the **new** path; old path is ignored |
+| Deleted (`D`) | ❌ No | File no longer exists — nothing to scan |
+| Binary files | ❌ No | Binary files are excluded (they cannot contain text annotations) |
+| Unmerged | ❌ No | Files with merge conflicts are skipped with a `::warning` |
 
 #### 4.1.2 Full Scan Mode (On-Demand)
 
@@ -290,6 +318,114 @@ developer reviews and accepts/rejects each suggestion.
 | **`$GITHUB_STEP_SUMMARY`** | Summary of fixes applied / proposed / awaiting review |
 | **Git diff** | When `dry-run: false`, produces a `git diff` of all deterministic changes |
 
+##### `auto_fix_review.json` Schema
+
+When `auto_fix: ai` types produce suggestions with `review_required: true`, the review file has the following structure:
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "generated_at": { "type": "string", "format": "date-time" },
+        "repository": { "type": "string" },
+        "commit_sha": { "type": "string" },
+        "ai_provider": { "type": "string", "description": "Provider used: copilot, claude, openai, custom" },
+        "model": { "type": "string", "description": "Model identifier (e.g., gpt-4o)" },
+        "tool_version": { "type": "string" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "properties": {
+        "total_suggestions": { "type": "integer" },
+        "types_processed": { "type": "integer" },
+        "types_skipped": { "type": "integer" }
+      }
+    },
+    "suggestions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string", "description": "Unique suggestion ID (e.g., FIX-001)" },
+          "type": { "type": "string", "description": "Augmentation type name (e.g., AC, TechDecision)" },
+          "file": { "type": "string", "description": "Relative file path" },
+          "line": { "type": "integer", "description": "Line number for insertion" },
+          "target_name": { "type": "string", "description": "Name of the code construct" },
+          "target_kind": { "type": "string", "description": "Kind: class, function, method, etc." },
+          "suggested_annotation": { "type": "string", "description": "The full annotation text to insert" },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1, "description": "AI confidence score (0.0–1.0)" },
+          "reasoning": { "type": "string", "description": "AI explanation of why this annotation was generated" },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "accepted", "rejected"],
+            "description": "Review status (default: pending)"
+          },
+          "reviewer_comment": { "type": "string", "description": "Optional comment from the reviewer" }
+        },
+        "required": ["id", "type", "file", "line", "target_name", "suggested_annotation", "status"]
+      }
+    },
+    "skipped_types": {
+      "type": "array",
+      "description": "Types that were skipped due to AI provider errors",
+      "items": {
+        "type": "object",
+        "properties": {
+          "type": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+```
+
+**Example:**
+
+```json
+{
+  "metadata": {
+    "generated_at": "2026-02-19T14:00:00Z",
+    "repository": "myorg/myapp",
+    "commit_sha": "abc123",
+    "ai_provider": "copilot",
+    "model": "gpt-4o",
+    "tool_version": "0.6.0"
+  },
+  "summary": {
+    "total_suggestions": 3,
+    "types_processed": 2,
+    "types_skipped": 1
+  },
+  "suggestions": [
+    {
+      "id": "FIX-001",
+      "type": "AC",
+      "file": "src/orders/order_service.py",
+      "line": 45,
+      "target_name": "checkout",
+      "target_kind": "method",
+      "suggested_annotation": "@LivDoc:AC(AC-ORD-001[a: Validate cart is not empty, b: Calculate total with tax])",
+      "confidence": 0.85,
+      "reasoning": "Method validates cart contents and calculates totals based on assertions and logic flow.",
+      "status": "pending",
+      "reviewer_comment": ""
+    }
+  ],
+  "skipped_types": [
+    {
+      "type": "Glossary",
+      "reason": "Rate limit exceeded after 3 retries"
+    }
+  ]
+}
+```
+
 #### 4.3.6 Auto-Fix Exit Codes
 
 | Exit Code | Meaning |
@@ -297,6 +433,37 @@ developer reviews and accepts/rejects each suggestion.
 | `0` | Dry-run: no fixable violations; Apply: all fixes applied successfully |
 | `1` | Dry-run: fixable violations found (report produced); Apply: some fixes failed |
 | `2` | Configuration error |
+
+#### 4.3.7 AI Provider Error Handling
+
+When the auto-fix regime uses `auto_fix: ai` types, the AI provider may fail. The action handles failures **per-type** — a failure for one type does not abort the entire run:
+
+| Failure Scenario | Behavior | Log Output |
+|---|---|---|
+| **Provider returns HTTP error** (4xx/5xx) | Skip the current type; continue with remaining types | `::warning` with status code and provider error message |
+| **Rate limit exceeded** (HTTP 429) | Retry with exponential backoff (3 attempts, 2s/4s/8s); if exhausted, skip the type | `::warning` listing the rate-limited type and retry count |
+| **Request timeout** (configurable, default 30s) | Skip the current type; continue | `::warning` with timeout duration and type name |
+| **Invalid / unparseable response** | Skip the current type; log the raw response for debugging | `::warning` with type name; raw response logged at `verbose` level |
+| **Authentication failure** (HTTP 401/403) | Skip **all** AI-assisted types (provider is misconfigured) | `::error` explaining the auth failure; all `ai` types listed as skipped |
+| **Network unreachable / DNS failure** | Skip **all** AI-assisted types | `::error` with connection details; all `ai` types listed as skipped |
+| **Provider not configured** | Skip all `ai` types silently | `::warning` listing skipped types (existing behavior from §4.3.4) |
+
+**Exit code impact:**
+
+- AI provider failures **do not** change the exit code to `2` (which is reserved for configuration errors).
+- In dry-run mode: the dry-run report lists skipped types with `status: "skipped"` and the failure reason. Exit code remains `0` if no other fixable violations exist, or `1` if fixable violations were found.
+- In apply mode (`dry-run: false`): deterministic fixes are still applied normally. Only AI-assisted fixes are affected. Exit code `1` if any fixes (deterministic or AI) failed or were skipped.
+
+**Summary reporting:** The `$GITHUB_STEP_SUMMARY` includes an **AI Provider Status** section when any AI types are configured:
+
+```markdown
+#### AI Provider Status
+| Type | Status | Detail |
+|---|---|---|
+| AC | ✅ Generated | 5 suggestions produced |
+| TechDecision | ⚠️ Skipped | Rate limit exceeded after 3 retries |
+| Glossary | ⚠️ Skipped | Response parse error |
+```
 
 > **Edge case — no fixable types.** When `regime: auto-fix` is used but **no**
 > augmentation types have `auto_fix` set to `deterministic` or `ai`, the action
@@ -341,7 +508,96 @@ Each file defines its own `annotation_prefix`. The prefix is **automatically pre
 | `audience` | `enum` | no | Primary audience: `technical`, `business`, `qa`, `architecture`, `operations`, `security` |
 | `pattern` | `string` (regex) | no | **Override** — custom regex if the auto-generated pattern is insufficient |
 | `auto_fix` | `enum` | no | Auto-fix mode: `no` (default), `deterministic` (template-based), `ai` (AI-assisted, non-deterministic) |
-| `auto_fix_template` | `string` | no | Template for `deterministic` auto-fix. Supports tokens: `{class_name}`, `{file_name}`, `{module_name}`. Ignored when `auto_fix` is `no` or `ai`. |
+| `auto_fix_template` | `string` | no | Template for `deterministic` auto-fix. Supports tokens: `{class_name}`, `{file_name}`, `{module_name}`, `{function_name}`, `{method_name}`, `{target_name}`. See §5.2.2. Ignored when `auto_fix` is `no` or `ai`. |
+
+#### 5.2.1 Extraction Rules Schema
+
+The `extraction_rules` property defines how structured data is extracted from the annotation body into the collector's `extracted_data` field. Its full schema:
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `capture_groups` | `list[object]` | no | Named capture groups extracted from the annotation value via the type's regex pattern |
+| `key_value_pairs` | `boolean` | no | When `true`, parse the annotation body as `key=value` pairs (default: `false`). Used for multiline annotations with named fields (e.g., `TechDecision`) |
+| `required_keys` | `list[string]` | no | When `key_value_pairs: true`, these keys must be present in the annotation body. Missing keys produce a violation at the configured `severity` level |
+| `optional_keys` | `list[string]` | no | When `key_value_pairs: true`, these keys are extracted if present but do not produce violations when missing |
+| `value_pattern` | `string` (regex) | no | Additional regex to validate the extracted value (e.g., `^[A-Z]+-\d+$` to enforce ID formats). Applied after extraction; mismatch produces a `warning` |
+| `transform` | `enum` | no | Post-extraction transformation: `none` (default), `lowercase`, `uppercase`, `trim` |
+
+**`capture_groups` item schema:**
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `name` | `string` | yes | Key name in the `extracted_data` output object (e.g., `feature_id`) |
+| `group` | `integer` | yes | Regex capture group number (1-based) from the type's `pattern` |
+
+**Example — simple capture group:**
+
+```yaml
+types:
+  - name: Feature
+    target: class
+    required: true
+    file_patterns: ["src/**/*.py"]
+    extraction_rules:
+      capture_groups:
+        - name: feature_id
+          group: 1
+      value_pattern: "^[A-Z]+-\\d+$"   # enforce ID format
+```
+
+**Example — key-value extraction (multiline):**
+
+```yaml
+types:
+  - name: TechDecision
+    target: class
+    multiline: true
+    file_patterns: ["src/**/*.py"]
+    extraction_rules:
+      key_value_pairs: true
+      required_keys: [id, title, rationale, date, status]
+      optional_keys: [alternatives]
+```
+
+The collector output for a `TechDecision` annotation with `key_value_pairs: true`:
+
+```json
+{
+  "type": "TechDecision",
+  "tag": "@LivDoc:TechDecision",
+  "value": { "id": "TECH-012", "title": "Use RabbitMQ", "rationale": "...", "date": "2026-01-15", "status": "accepted" },
+  "extracted_data": {
+    "id": "TECH-012",
+    "title": "Use RabbitMQ",
+    "rationale": "...",
+    "alternatives": "Apache Kafka, AWS SQS",
+    "date": "2026-01-15",
+    "status": "accepted"
+  }
+}
+```
+
+#### 5.2.2 Auto-Fix Template Tokens
+
+The `auto_fix_template` property supports the following tokens, resolved at fix time from the code context surrounding the missing annotation:
+
+| Token | Description | Example Resolution |
+|---|---|---|
+| `{class_name}` | Name of the enclosing class | `OrderService` |
+| `{function_name}` | Name of the enclosing top-level function | `place_order` |
+| `{method_name}` | Name of the enclosing method (inside a class) | `checkout` |
+| `{target_name}` | Name of the target construct (class, function, method — whichever matched) | `OrderService` |
+| `{file_name}` | File name without extension | `order_service` |
+| `{file_path}` | Relative file path from repository root | `src/orders/order_service.py` |
+| `{module_name}` | Python module path (dotted) or directory-based module name | `src.orders.order_service` |
+| `{line_number}` | Line number where the annotation will be inserted | `42` |
+
+**Token validation at config load time:**
+
+- All tokens in `auto_fix_template` must be from the list above.
+- Unrecognized tokens (e.g., `{unknown_token}`) cause a configuration validation error (exit code `2`) with a message listing the invalid token and the valid options.
+- A template with no tokens is valid (produces a static annotation value).
+- Tokens that cannot be resolved at runtime (e.g., `{class_name}` on a `module` target) resolve to an empty string and emit a `::warning`.
 
 ### 5.3 Annotation Placement — Inside vs. Outside the Object
 
@@ -671,6 +927,56 @@ languages:
       trait: '^\s*(sealed\s+)?trait\s+(\w+)'
       val: '^\s*(lazy\s+)?val\s+(\w+)'
 ```
+
+#### Language Configuration Schema
+
+Each entry under the top-level `languages` key defines a language with the following properties:
+
+| Property | Type | Required | Description |
+|---|---|---|---|
+| `extensions` | `list[string]` | yes | File extensions that identify this language (e.g., `[".py"]`, `[".ts", ".tsx"]`). Must include the leading dot. When `inherits` is set, the child **must** still declare its own `extensions` (not inherited). |
+| `comment_styles` | `list[object]` | yes | Comment delimiters the scanner uses to find annotation blocks. Each entry is a single-key object: `{ <style_name>: <delimiter> }`. See Comment Style Entries below. |
+| `targets` | `object` | yes | Map of target names to regex patterns. Keys are target names (e.g., `class`, `function`, `resource`), values are regex strings. The special values `__file_header__` (first comment block) and `__any__` (no structural constraint) are reserved. |
+| `inherits` | `string` | no | Name of another language definition to inherit from. The child copies all `comment_styles` and `targets` from the parent, then overrides or adds entries. `extensions` are **not** inherited. Single-level only — chained inheritance is not supported. |
+
+**Comment style entries:**
+
+| Style Name | Delimiter Format | Example | Description |
+|---|---|---|---|
+| `docstring` | `'"""'` | Python docstrings | Triple-quote delimited blocks |
+| `jsdoc` / `javadoc` / `scaladoc` | `'/** */'` | JSDoc, Javadoc | Block comments starting with `/**` |
+| `hash` | `'#'` | Python, Ruby, YAML | Line comments with `#` |
+| `line` | `'//'` | Java, TypeScript, Go | Line comments with `//` |
+| `block` | `'/* */'` | C, Go, CSS | Block comments with `/* ... */` |
+| `xml` / `html` | `'<!-- -->'` | HTML, XML, Markdown | XML-style comments |
+| `sql_line` | `'--'` | SQL | SQL line comments |
+
+The style name is a user-chosen key for readability; the **delimiter value** is what the scanner uses for parsing. Custom style names are allowed (e.g., `heredoc: '<<~DOC'`).
+
+**Example — complete language definition:**
+
+```yaml
+languages:
+  kotlin:
+    extensions: [".kt", ".kts"]
+    comment_styles:
+      - kdoc: '/** */'
+      - line: '//'
+    targets:
+      class: '^\s*(data\s+|sealed\s+|abstract\s+)?class\s+(\w+)'
+      object: '^\s*(companion\s+)?object\s+(\w+)'
+      function: '^\s*(suspend\s+)?fun\s+(\w+)'
+      module: '__file_header__'
+      constructor: '^\s+constructor\s*\('
+```
+
+**Validation rules:**
+
+- Each language must have at least one `extensions` entry.
+- Each language must have at least one `comment_styles` entry.
+- Target regex patterns must compile without errors; invalid patterns cause exit code `2`.
+- The `inherits` value must reference a language defined in the same or a previously loaded config file.
+- Duplicate language names across config files are an error (exit code `2`).
 
 Target patterns are configured per language in a `languages` section:
 
@@ -1598,6 +1904,25 @@ config-path: "livdoc_core.yml,livdoc_qa.yml,livdoc_ops.yml"
 
 Each file defines its own `annotation_prefix`, creating a separate namespace. Types across files must not have conflicting fully-qualified tags (e.g., two files both defining `@LivDoc:Feature` is an error).
 
+#### Multiple-Prefix Namespace Rules
+
+When multiple config files define **different** prefixes, the following rules apply:
+
+| Scenario | Valid? | Example |
+|---|---|---|
+| Same `name` in different prefixes | ✅ **Yes** | `@QA:Feature` (in `livdoc_qa.yml`) and `@Arch:Feature` (in `livdoc_arch.yml`) are distinct types |
+| Same `name` in the same prefix | ❌ **Error** | Two types both producing `@LivDoc:Feature` — detected at config validation, exit code `2` |
+| Same fully-qualified tag across files | ❌ **Error** | Two files both defining `annotation_prefix: @LivDoc` with a type named `Feature` — same tag collision |
+| Different `name` in the same prefix | ✅ **Yes** | `@LivDoc:Feature` and `@LivDoc:AC` in the same file — normal usage |
+
+The collision check operates on the **fully-qualified tag** (`<prefix>:<name>`), not on the `name` alone. This means:
+
+- `@QA:Feature` and `@Arch:Feature` are **two independent types** — each has its own rules, targets, file patterns, and extraction rules.
+- The collector output includes the full tag (e.g., `"tag": "@QA:Feature"`), ensuring consumers can distinguish them.
+- In the augmentor, violations reference the full tag so there is no ambiguity.
+
+> **Best practice:** When using multiple prefixes, choose prefix names that reflect the concern area (e.g., `@QA`, `@Arch`, `@Ops`, `@Sec`) to make annotations self-documenting in source code.
+
 ### 9.2 Configuration Validation
 
 On startup, the action validates:
@@ -1686,7 +2011,125 @@ To ignore all violations for an entire file, place at the top of the file:
 
 ---
 
-## 12. Collector Output Schema
+## 12. CLI & Local Usage
+
+While the primary interface is the GitHub Action, `main.py` also supports **direct CLI invocation** for local development, debugging, and pre-push validation. All action inputs map to CLI arguments.
+
+### 12.1 Command-Line Interface
+
+```bash
+python main.py \
+  --regime <augmentor|collector|auto-fix> \
+  [--config-path <path>[,<path>...]] \
+  [--scan-mode <pr|full|per-type>] \
+  [--augmentation-type <type-name>] \
+  [--source-paths <dir>[,<dir>...]] \
+  [--exclude-paths <glob>[,<glob>...]] \
+  [--output-path <file>] \
+  [--fail-on-violations <true|false>] \
+  [--verbose <true|false>] \
+  [--dry-run <true|false>] \
+  [--base-ref <ref>] \
+  [--head-ref <ref>]
+```
+
+### 12.2 CLI Arguments
+
+| Argument | Required | Default | Equivalent Action Input | Description |
+|---|---|---|---|---|
+| `--regime` | yes | — | `regime` | Operating mode: `augmentor`, `collector`, or `auto-fix` |
+| `--config-path` | no | `augmentation_types.yml` | `config-path` | Comma-separated list of config files |
+| `--scan-mode` | no | `full` | `scan-mode` | Augmentor scan mode: `pr`, `full`, or `per-type`. **Note:** defaults to `full` in CLI mode (not `pr`) since there is no PR context |
+| `--augmentation-type` | no | — | `augmentation-type` | Specific type for `per-type` scan |
+| `--source-paths` | no | `.` | `source-paths` | Directories to scan |
+| `--exclude-paths` | no | — | `exclude-paths` | Glob patterns to exclude |
+| `--output-path` | no | `code_augmentations.json` | `output-path` | Output file path (collector) |
+| `--fail-on-violations` | no | `true` | `fail-on-violations` | Exit with code `1` on violations |
+| `--verbose` | no | `false` | `verbose` | Enable verbose logging |
+| `--dry-run` | no | `true` | `dry-run` | Auto-fix: preview without modifying |
+| `--base-ref` | no | `origin/main` | _(N/A — derived from PR context)_ | Base git ref for PR mode diff (CLI only) |
+| `--head-ref` | no | `HEAD` | _(N/A — derived from PR context)_ | Head git ref for PR mode diff (CLI only) |
+
+> **Environment vs. CLI:** When running inside GitHub Actions, the entry point reads inputs from `INPUT_*` environment variables (set by the composite action). When invoked directly from the command line, it reads `--` arguments. If both are present, CLI arguments take precedence.
+
+### 12.3 Example Usage
+
+**Run augmentor (full scan) locally:**
+
+```bash
+python main.py --regime augmentor --scan-mode full --config-path augmentation_types.yml
+```
+
+**Run augmentor for a specific type:**
+
+```bash
+python main.py --regime augmentor --scan-mode per-type --augmentation-type Feature
+```
+
+**Run augmentor in PR mode locally (simulate a PR diff):**
+
+```bash
+python main.py --regime augmentor --scan-mode pr --base-ref origin/main --head-ref HEAD
+```
+
+**Run collector to extract annotations:**
+
+```bash
+python main.py --regime collector --output-path annotations.json
+```
+
+**Run auto-fix in dry-run mode:**
+
+```bash
+python main.py --regime auto-fix --dry-run true --verbose true
+```
+
+**Use multiple config files:**
+
+```bash
+python main.py --regime augmentor --scan-mode full \
+  --config-path "livdoc_core.yml,livdoc_qa.yml,livdoc_ops.yml"
+```
+
+### 12.4 Local Development Workflow
+
+The recommended local workflow before pushing:
+
+```bash
+# 1. Run quality gates
+make qa
+
+# 2. Run augmentor on the project itself (dogfooding)
+python main.py --regime augmentor --scan-mode full --verbose true
+
+# 3. Check a specific type across the codebase
+python main.py --regime augmentor --scan-mode per-type --augmentation-type TestEvidence
+
+# 4. Preview auto-fix suggestions (dry-run)
+python main.py --regime auto-fix --dry-run true
+
+# 5. Extract annotations to verify collector output
+python main.py --regime collector --output-path /tmp/annotations.json
+cat /tmp/annotations.json | python -m json.tool
+```
+
+### 12.5 Output in CLI Mode
+
+When running locally (outside GitHub Actions), the tool adjusts its output:
+
+| Feature | GitHub Actions | CLI / Local |
+|---|---|---|
+| Violation annotations | `::error`, `::warning`, `::notice` | Coloured terminal output (errors in red, warnings in yellow) |
+| Step summary | Written to `$GITHUB_STEP_SUMMARY` | Printed to stdout |
+| JSON output | Written to `output-path` | Written to `output-path` (same) |
+| Exit codes | Same (`0`, `1`, `2`) | Same (`0`, `1`, `2`) |
+| Git diff (auto-fix) | Included in step summary | Printed to stdout |
+
+The tool auto-detects the GitHub Actions environment via the `GITHUB_ACTIONS` environment variable. When absent, CLI mode output formatting is used.
+
+---
+
+## 13. Collector Output Schema
 
 The collector produces `code_augmentations.json` with the following structure:
 
@@ -1800,7 +2243,7 @@ The collector produces `code_augmentations.json` with the following structure:
 
 ---
 
-## 13. GitHub Action Definition (action.yml)
+## 14. GitHub Action Definition (action.yml)
 
 The action follows the composite action pattern used in AbsaOSS/generate-release-notes:
 
@@ -1899,13 +2342,13 @@ runs:
 
 ---
 
-## 14. Example Workflows
+## 15. Example Workflows
 
-### 14.1 Example Implementation in AbsaOSS/generate-release-notes
+### 15.1 Example Implementation in AbsaOSS/generate-release-notes
 
 The following examples show how living-doc-augmentor-gh would be integrated into the AbsaOSS/generate-release-notes repository.
 
-#### 14.1.1 PR Augmentor Check
+#### 15.1.1 PR Augmentor Check
 
 ```yaml
 name: Living Doc Augmentor — PR Check
@@ -1933,7 +2376,7 @@ jobs:
           fail-on-violations: 'true'
 ```
 
-#### 14.1.2 Full Repository Scan (On-Demand)
+#### 15.1.2 Full Repository Scan (On-Demand)
 
 ```yaml
 name: Living Doc Augmentor — Full Scan
@@ -1963,7 +2406,7 @@ jobs:
           fail-on-violations: 'false'
 ```
 
-#### 14.1.3 Collector (Extract Annotations for Release)
+#### 15.1.3 Collector (Extract Annotations for Release)
 
 ```yaml
 
@@ -2004,15 +2447,15 @@ jobs:
 
 ---
 
-## 15. Quality Gates
+## 16. Quality Gates
 
 Modeled after AbsaOSS/generate-release-notes, the repository enforces the following quality gates.
 
 > **On-Demand CI:** All CI workflows use `workflow_dispatch` (or `pull_request` where
 > essential) to protect paid GitHub Actions minutes. Developers run the full
-> quality-gate suite **locally** before pushing (see §15.4).
+> quality-gate suite **locally** before pushing (see §16.4).
 
-### 15.1 CI Workflows
+### 16.1 CI Workflows
 
 | Workflow | Trigger | Description |
 |---|---|---|
@@ -2027,14 +2470,14 @@ Modeled after AbsaOSS/generate-release-notes, the repository enforces the follow
 | PR Title Convention | `pull_request` | Enforce conventional commit format |
 | YAML Validation | `pull_request` | Validate `action.yml` and example configs |
 
-### 15.2 Branch Protection Rules
+### 16.2 Branch Protection Rules
 
 - Require PR reviews (≥ 1 approval).
 - Require all status checks to pass before merging.
 - Require linear history (no merge commits).
 - Require signed commits (recommended).
 
-### 15.3 Configuration Files
+### 16.3 Configuration Files
 
 | File | Purpose |
 |---|---|
@@ -2044,7 +2487,7 @@ Modeled after AbsaOSS/generate-release-notes, the repository enforces the follow
 | `requirements-dev.txt` | Development/testing dependencies (incl. `radon`, `pip-audit`) |
 | `.github/dependabot.yml` | Automated dependency updates via Dependabot |
 
-### 15.4 Local Quality-Gate Script
+### 16.4 Local Quality-Gate Script
 
 A `Makefile` (with a thin wrapper `scripts/run_qa.sh` for CI parity) runs **every**
 gate locally so developers never need to push just to see CI results:
@@ -2095,7 +2538,7 @@ make qa-parallel
 
 ---
 
-## 16. Repository Structure
+## 17. Repository Structure
 
 > **Single-purpose files:** Every source module has exactly one responsibility.
 > Test files mirror the source tree 1:1 so navigation is instant.
@@ -2162,7 +2605,7 @@ living-doc-augmentor-gh/
 │   └── SPEC.md                           # This file
 ├── action.yml                            # Composite action definition
 ├── main.py                               # Entry point
-├── Makefile                              # Local quality-gate runner (see §15.4)
+├── Makefile                              # Local quality-gate runner (see §16.4)
 ├── requirements.txt                      # Runtime dependencies
 ├── requirements-dev.txt                  # Dev/test dependencies
 ├── pyproject.toml                        # Project configuration
@@ -2177,7 +2620,7 @@ living-doc-augmentor-gh/
 
 ---
 
-## 17. AI Assistant Integration
+## 18. AI Assistant Integration
 
 > **Model-agnostic design.** While GitHub Copilot is the primary example below,
 > every technique applies equally to **any** LLM-backed coding assistant
@@ -2190,7 +2633,7 @@ action, its configuration, and its codebase are designed to maximize the value
 developers get from assistants — both when **using** the action in their
 projects and when **contributing** to the action itself.
 
-### 17.1 AI Assistant Instructions File
+### 18.1 AI Assistant Instructions File
 
 The repository ships a `.github/copilot-instructions.md` file (also usable by
 Claude, Gemini, and other assistants that read project-context files):
@@ -2220,7 +2663,7 @@ structured `@LivDoc:*` annotations from source code.
 - Set appropriate `target` and `file_patterns`
 ```
 
-### 17.2 Plugin Architecture
+### 18.2 Plugin Architecture
 
 The scanner supports pluggable detection strategies:
 
@@ -2233,7 +2676,7 @@ class DetectionStrategy(Protocol):
         ...
 ```
 
-### 17.3 Built-in Detection Strategies
+### 18.3 Built-in Detection Strategies
 
 | Strategy | Description |
 |---|---|
@@ -2241,7 +2684,7 @@ class DetectionStrategy(Protocol):
 | `DocstringDetectionStrategy` | Python docstring-aware detection (understands docstring boundaries) |
 | `CommentBlockDetectionStrategy` | Generic comment block detection (`/** */`, `# ...`, `<!-- -->`) |
 
-### 17.4 Agent Mode Support
+### 18.4 Agent Mode Support
 
 The project is structured to work optimally with AI assistants in **agent mode** (multi-step autonomous tasks):
 
@@ -2251,7 +2694,7 @@ The project is structured to work optimally with AI assistants in **agent mode**
 - **Detailed docstrings:** Every public API includes docstrings describing intent, parameters, return values, and side effects.
 - **Test-first patterns:** Test files mirror source files 1:1, enabling assistants to generate tests alongside implementation.
 
-### 17.5 Chat Participant — `@livingdoc` (Future)
+### 18.5 Chat Participant — `@livingdoc` (Future)
 
 A custom `@livingdoc` chat participant can be registered in VS Code (or equivalent IDE plugin) to provide in-editor assistance:
 
@@ -2265,7 +2708,7 @@ A custom `@livingdoc` chat participant can be registered in VS Code (or equivale
 | `@livingdoc /coverage` | Report annotation coverage statistics for the workspace |
 | `@livingdoc /auto-fix` | Automatically add missing `@LivDoc:*` annotations to the current file (AI-assisted) |
 
-### 17.6 AI Extension Points
+### 18.6 AI Extension Points
 
 - **Custom detection strategies:** Assistants can generate new `DetectionStrategy` implementations for project-specific patterns.
 - **Augmentation type templates:** Assistants can generate `augmentation_types.yml` entries based on project conventions.
@@ -2275,7 +2718,7 @@ A custom `@livingdoc` chat participant can be registered in VS Code (or equivale
 - **Review assistance:** Assistants can review PRs for missing annotations and suggest additions.
 - **Auto-fix (AI-scoped):** Given a violation list, an AI assistant can propose fix commits adding the missing annotations.
 
-### 17.7 AI-Friendly Code Patterns
+### 18.7 AI-Friendly Code Patterns
 
 All core modules include:
 
@@ -2287,9 +2730,9 @@ All core modules include:
 
 ---
 
-## 18. Error Reporting & Diagnostics
+## 19. Error Reporting & Diagnostics
 
-### 18.1 Violation Report Format
+### 19.1 Violation Report Format
 
 The augmentor produces structured violation reports:
 
@@ -2298,7 +2741,7 @@ The augmentor produces structured violation reports:
 ::warning file=src/utils.py,line=15,col=1::Unrecognized annotation @LivDoc:Unknown in comment block
 ```
 
-### 18.2 Severity Levels
+### 19.2 Severity Levels
 
 | Level | GitHub Annotation | CI Behavior |
 |---|---|---|
@@ -2306,7 +2749,7 @@ The augmentor produces structured violation reports:
 | `warning` | `::warning` | Reported but does not fail the workflow |
 | `info` | `::notice` | Informational — logged but no annotation |
 
-### 18.3 Diagnostic Output
+### 19.3 Diagnostic Output
 
 When `verbose: true`, the action produces detailed diagnostic output:
 
@@ -2316,7 +2759,51 @@ When `verbose: true`, the action produces detailed diagnostic output:
 - Location detection decisions (which layer matched/rejected).
 - Timing information per phase.
 
-### 18.4 Summary Report
+### 19.4 Log Format & Verbosity
+
+#### Log Levels
+
+The action uses four log levels, controlled by the `verbose` input:
+
+| Level | Visible when `verbose: false` | Visible when `verbose: true` | Description |
+|---|---|---|---|
+| `ERROR` | ✅ | ✅ | Configuration errors, fatal failures |
+| `WARNING` | ✅ | ✅ | Non-fatal issues: unrecognized annotations, skipped AI types, ignore-without-reason |
+| `INFO` | ✅ | ✅ | Summary statistics, phase transitions, final results |
+| `DEBUG` | ❌ | ✅ | File-level scan details, pattern matches, location decisions, timing |
+
+#### Output Format
+
+The action produces **two output streams** with different formats:
+
+| Stream | Format | Destination | Content |
+|---|---|---|---|
+| **GitHub annotations** | GitHub Actions workflow commands | `stdout` (parsed by Actions runner) | `::error`, `::warning`, `::notice` with `file=`, `line=`, `col=` attributes |
+| **Diagnostic log** | Structured plain text | `stderr` | Human-readable log lines with level, timestamp, and context |
+
+**Diagnostic log line format:**
+
+```
+[LEVEL] [TIMESTAMP] [COMPONENT] MESSAGE
+```
+
+Example:
+
+```
+[INFO]  [2026-02-19T10:30:01Z] [scanner]   Scanning 42 files matching 3 augmentation types
+[DEBUG] [2026-02-19T10:30:01Z] [scanner]   Evaluating src/order_service.py against type Feature (target=class)
+[DEBUG] [2026-02-19T10:30:01Z] [location]  Layer 1 match: src/order_service.py matches glob src/**/*.py
+[DEBUG] [2026-02-19T10:30:01Z] [location]  Layer 2 match: class OrderService at line 5
+[DEBUG] [2026-02-19T10:30:01Z] [scanner]   Pattern @LivDoc:Feature\(([^)]+)\) not found in comment block lines 2-8
+[WARN]  [2026-02-19T10:30:01Z] [augmentor] Missing required @LivDoc:Feature on class OrderService (src/order_service.py:5)
+[INFO]  [2026-02-19T10:30:02Z] [augmentor] Scan complete: 42 files, 3 violations, 12 annotations found (1.2s)
+```
+
+**Component tags:** `config`, `scanner`, `location`, `augmentor`, `collector`, `auto-fix`, `ai-provider`, `review`.
+
+> **Machine-readable output.** For CI/CD integration, the collector's `code_augmentations.json` and the auto-fix `auto_fix_review.json` are the structured machine-readable outputs. The diagnostic log is intended for human debugging and is not guaranteed to be parseable across versions.
+
+### 19.5 Summary Report
 
 After every run, the action writes a summary to `$GITHUB_STEP_SUMMARY`:
 
@@ -2340,9 +2827,9 @@ After every run, the action writes a summary to `$GITHUB_STEP_SUMMARY`:
 
 ---
 
-## 19. Versioning & Compatibility
+## 20. Versioning & Compatibility
 
-### 19.1 Configuration Schema Versioning
+### 20.1 Configuration Schema Versioning
 
 The `augmentation_types.yml` file includes a `version` field:
 
@@ -2352,7 +2839,7 @@ version: "1.0"
 
 The action validates that the configuration version is compatible with the running action version. Incompatible versions produce exit code `2` with a clear error message.
 
-### 19.2 Semantic Versioning
+### 20.2 Semantic Versioning
 
 The action follows [Semantic Versioning 2.0.0](https://semver.org/):
 
@@ -2360,11 +2847,11 @@ The action follows [Semantic Versioning 2.0.0](https://semver.org/):
 - **MINOR:** New augmentation type properties, new detection strategies, new inputs/outputs.
 - **PATCH:** Bug fixes, performance improvements, documentation updates.
 
-### 19.3 Output Schema Versioning
+### 20.3 Output Schema Versioning
 
 The `code_augmentations.json` output includes a `tool_version` field in metadata. Consumers should use this to handle schema evolution.
 
-### 19.4 Backward Compatibility Policy
+### 20.4 Backward Compatibility Policy
 
 - Configuration files from version `N` will work with action version `N+1` (one major version forward compatibility).
 - Output schema changes within a major version are always additive (new fields only, never removed).
@@ -2372,37 +2859,37 @@ The `code_augmentations.json` output includes a `tool_version` field in metadata
 
 ---
 
-## 20. Security Considerations
+## 21. Security Considerations
 
-### 20.1 Input Validation
+### 21.1 Input Validation
 
 - All regex patterns from `augmentation_types.yml` are compiled with timeout protection to prevent ReDoS attacks.
 - File glob patterns are validated and sandboxed to the repository root — no path traversal is possible.
 - Action inputs are sanitized before use in shell commands.
 
-### 20.2 No Code Execution
+### 21.2 No Code Execution
 
 The action **reads** source code but never **executes** it. Annotations are extracted from comments and docstrings only — no imports, no `eval`, no dynamic code loading.
 
-### 20.3 Output Sanitization
+### 21.3 Output Sanitization
 
 The `code_augmentations.json` output sanitizes all extracted values to prevent injection when consumed by downstream tools.
 
-### 20.4 Dependency Security
+### 21.4 Dependency Security
 
 - Dependencies are pinned to exact versions in `requirements.txt`.
 - Automated dependency updates via **Dependabot** with vulnerability alerts.
 - `pip audit` is included in the CI pipeline.
 
-### 20.5 Permissions
+### 21.5 Permissions
 
 The GitHub Action requires only `contents: read` permission. It does not need write access to the repository.
 
 ---
 
-## 21. Performance & Scalability
+## 22. Performance & Scalability
 
-### 21.1 Design Targets
+### 22.1 Design Targets
 
 | Metric | Target |
 |---|---|
@@ -2411,7 +2898,7 @@ The GitHub Action requires only `contents: read` permission. It does not need wr
 | Memory usage | < 256 MB for repositories with up to 10,000 files |
 | Collector output generation | < 10 seconds for 10,000 annotations |
 
-### 21.2 Optimization Strategies
+### 22.2 Optimization Strategies
 
 - **Lazy file reading:** Files are read only when their path matches at least one `file_patterns` glob.
 - **Early termination:** In PR mode, only changed files are loaded.
@@ -2419,20 +2906,20 @@ The GitHub Action requires only `contents: read` permission. It does not need wr
 - **Streaming scan:** Files are scanned line-by-line to avoid loading entire files into memory for large files.
 - **Parallel file processing:** Multi-threaded file scanning for full-repo mode (configurable concurrency).
 
-### 21.3 Caching (Future)
+### 22.3 Caching (Future)
 
 A future version will support caching scan results keyed by file content hash, enabling incremental scans that skip unchanged files.
 
 ---
 
-## 22. Tutorial — Full Augmentation Examples
+## 23. Tutorial — Full Augmentation Examples
 
 This section provides a **complete, copy-pasteable** reference for every
 augmentation category defined in §8. Each example shows the annotation in
 context — including multiline variants — so teams can use this chapter as a
 self-service onboarding guide.
 
-### 22.1 Traceability (Feature, AC, User Story)
+### 23.1 Traceability (Feature, AC, User Story)
 
 ```python
 class OrderService:
@@ -2462,7 +2949,7 @@ class OrderService:
         ...
 ```
 
-### 22.2 Testing (TestEvidence, BDD Keyword Catalogue)
+### 23.2 Testing (TestEvidence, BDD Keyword Catalogue)
 
 ```python
 # @LivDoc:TestEvidence(ORD-001-AC-01)
@@ -2483,7 +2970,7 @@ Feature: Order management
     Then  the order total matches verify_total
 ```
 
-### 22.3 Architecture (Layer, Component, ArchDecision)
+### 23.3 Architecture (Layer, Component, ArchDecision)
 
 ```java
 /**
@@ -2496,7 +2983,7 @@ public class OrderCommandHandler {
 }
 ```
 
-### 22.4 API Documentation (Endpoint, Contract, DataModel)
+### 23.4 API Documentation (Endpoint, Contract, DataModel)
 
 ```python
 class UserRouter:
@@ -2508,7 +2995,7 @@ class UserRouter:
     ...
 ```
 
-### 22.5 Operations (Runbook, Alert, SLA)
+### 23.5 Operations (Runbook, Alert, SLA)
 
 ```yaml
 # monitoring/alerts.yml
@@ -2522,7 +3009,7 @@ groups:
         expr: histogram_quantile(0.99, rate(order_duration_seconds_bucket[5m])) > 0.5
 ```
 
-### 22.6 Compliance (Regulation, DataClassification, AuditControl)
+### 23.6 Compliance (Regulation, DataClassification, AuditControl)
 
 ```python
 class PaymentProcessor:
@@ -2535,7 +3022,7 @@ class PaymentProcessor:
     ...
 ```
 
-### 22.7 Dependencies (ExternalSystem, Library, Migration)
+### 23.7 Dependencies (ExternalSystem, Library, Migration)
 
 ```python
 # @LivDoc:ExternalSystem(Stripe API v2023-10-16)
@@ -2547,7 +3034,7 @@ def upgrade():
     op.add_column("users", sa.Column("payment_method", sa.String()))
 ```
 
-### 22.8 Process (Workflow, SLA, Stakeholder)
+### 23.8 Process (Workflow, SLA, Stakeholder)
 
 ```typescript
 /**
@@ -2558,7 +3045,7 @@ def upgrade():
 export class ClientOnboardingOrchestrator { /* ... */ }
 ```
 
-### 22.9 Decisions
+### 23.9 Decisions
 
 ```python
 class EventBus:
@@ -2598,7 +3085,7 @@ class EventBus:
 object PricingPolicy
 ```
 
-### 22.10 Glossary
+### 23.10 Glossary
 
 ```python
 class Tenant:
@@ -2611,7 +3098,7 @@ class Tenant:
     ...
 ```
 
-### 22.11 Domain Objects
+### 23.11 Domain Objects
 
 ```java
 /**
@@ -2622,7 +3109,7 @@ class Tenant:
 public class Order { /* ... */ }
 ```
 
-### 22.12 Project Descriptions
+### 23.12 Project Descriptions
 
 ```markdown
 <!-- @LivDoc:ProjectDescription(living-doc-augmentor-gh — A composite GitHub
@@ -2631,7 +3118,7 @@ public class Order { /* ... */ }
 # Living Doc Augmentor
 ```
 
-### 22.13 Cross-Language Parity
+### 23.13 Cross-Language Parity
 
 The **same** logical annotation in different languages:
 
@@ -2652,7 +3139,7 @@ The **same** logical annotation in different languages:
 
 ---
 
-## 23. Roadmap
+## 24. Roadmap
 
 > **POC-first delivery.** The goal is to ship a **usable proof-of-concept as
 > fast as possible** and then iterate with backward-compatible improvements.
