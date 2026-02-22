@@ -46,7 +46,7 @@ The action operates in two distinct regimes (plus an experimental third):
 |---|---|
 | **Augmentor** | Search for location without annotations and report violations based on user-defined augmentation types and rules. Runs in PR mode (changed files only) or full-scan mode (entire repository). |
 | **Collector** | Extracts all augmented data from source code into a structured JSON output for upstream consumption |
-| **Auto-Fix** _(experimental)_ | Automatically insert missing annotations for types that support deterministic derivation. Always dry-run by default. |
+| **Auto-Fix** _(experimental)_ | Automatically insert missing annotations using templates (`deterministic`) or AI (`ai`). Always dry-run by default. AI-generated fixes require human review. |
 
 ---
 
@@ -55,7 +55,7 @@ The action operates in two distinct regimes (plus an experimental third):
 ### Goals
 
 - **G1:** Provide a composite GitHub Action (Python 3.14) for augmenting and collecting structured annotations from source code.
-- **G2:** Support three regimes — **augmentor** (validation), **collector** (extraction), and **auto-fix** (experimental — deterministic insertion of missing annotations with dry-run by default).
+- **G2:** Support three regimes — **augmentor** (validation), **collector** (extraction), and **auto-fix** (experimental — `deterministic` template-based insertion or `ai`-assisted generation with dry-run by default).
 - **G3:** Allow user-defined augmentation types with configurable rules for placement and detection.
 - **G4:** Provide a **generic, language-agnostic solution** where all detection behavior is driven by flexible, user-defined rules — not hard-coded to any single framework or language.
 - **G5:** Implement a **flexible location detection system** with composable target scoping rules (file globs, code structure targets, comment-style awareness) that can adapt to any project convention.
@@ -76,7 +76,7 @@ The action operates in two distinct regimes (plus an experimental third):
 - Language-specific AST parsing in v1 (regex/pattern-based detection first; AST is a future enhancement).
 - Replacing dedicated documentation tools (Sphinx, MkDocs, etc.) — this action augments source code, it does not generate final documentation artifacts.
 
-> **Note:** Source code auto-modification (auto-fix of missing annotations) is **not** in scope for the augmentor itself. However, AI assistants (Copilot, Claude, etc.) integrated via §17 can suggest and apply annotations in the developer's editor. The augmentor validates; the AI assistant authors.
+> **Note:** Auto-fix supports two modes: **deterministic** (template-based, predictable) and **ai** (AI-assisted, non-deterministic, requires configured provider). Deterministic fixes are safe for CI pipelines; AI fixes produce suggestions for human review. Types that opt out (`auto_fix: no`) require manual annotation. See §4.3.
 
 ---
 
@@ -193,50 +193,97 @@ The **auto-fix** regime can automatically insert missing annotations into source
 > explicitly overridden with `dry-run: false`. In dry-run mode, the action
 > reports **what it would change** without modifying any files.
 
-#### 4.3.1 Supported Types
+#### 4.3.1 Auto-Fix Modes
 
-Not every augmentation type supports auto-fix. A type is auto-fixable when:
+The `auto_fix` property on each augmentation type is an **enum**, not a boolean:
 
-- The annotation value can be **deterministically derived** from context (e.g., a class name, file path, or configured template).
-- The type has `auto_fix: true` in its configuration.
-
-| Auto-fixable | Example | Derivation strategy |
-|---|---|---|
-| `Feature` | `@LivDoc:Feature(class_name)` | Use class name as placeholder ID |
-| `Owner` | `@LivDoc:Owner(CODEOWNERS)` | Read from `CODEOWNERS` file |
-| `ModuleDescription` | `@LivDoc:ModuleDescription(name=...)` | Use module docstring first line |
-| `Tier` | `@LivDoc:Tier(tier-3)` | Default tier from config |
-
-| Not auto-fixable | Reason |
+| Value | Meaning |
 |---|---|
-| `AC` | Sub-values require human judgement |
-| `Decision` | Rationale, alternatives require human input |
-| `Glossary` | Definition requires domain knowledge |
-| `TestEvidence` | Mapping to requirements requires human triage |
+| `no` _(default)_ | Auto-fix is disabled for this type |
+| `deterministic` | The annotation value can be derived from code context using a template — result is **reproducible and predictable** |
+| `ai` | An AI assistant generates the annotation value — result may be **non-deterministic** and requires human review |
 
-#### 4.3.2 Auto-Fix Configuration
+> In dry-run mode, both `deterministic` and `ai` fixes are **reported but not applied**.
+> When `dry-run: false`, `deterministic` fixes are applied directly;
+> `ai` fixes are applied only when an AI provider is configured (see below).
+
+#### 4.3.2 Deterministic vs. AI-Assisted Fixes
+
+| `auto_fix` | Example Type | Example | Derivation strategy |
+|---|---|---|---|
+| `deterministic` | `Feature` | `@LivDoc:Feature(OrderService)` | Use class name as placeholder ID |
+| `deterministic` | `Owner` | `@LivDoc:Owner(team-orders)` | Read from `CODEOWNERS` file |
+| `deterministic` | `ModuleDescription` | `@LivDoc:ModuleDescription(name=...)` | Use module docstring first line |
+| `deterministic` | `Tier` | `@LivDoc:Tier(tier-3)` | Default tier from config |
+| `ai` | `AC` | `@LivDoc:AC(AC-ORD-001[a: ..., b: ...])` | AI infers sub-criteria from method body |
+| `ai` | `Decision` | `@LivDoc:Decision(type=technology, ...)` | AI infers rationale from code context |
+| `ai` | `Glossary` | `@LivDoc:Glossary(term=Order, definition=...)` | AI generates definition from class docstring |
+| `ai` | `TestEvidence` | `@LivDoc:TestEvidence(REQ-ORD-001)` | AI maps test to requirement based on naming/assertions |
+| `no` | _any_ | — | No auto-fix — manual annotation only |
+
+#### 4.3.3 Auto-Fix Configuration
 
 ```yaml
 types:
   - name: Feature
     target: class
     required: true
-    auto_fix: true
+    auto_fix: deterministic                             # template-based, predictable
     auto_fix_template: "@LivDoc:Feature({class_name})"  # placeholder tokens
+    file_patterns:
+      - "src/**/*.py"
+
+  - name: AC
+    target: method
+    required: false
+    auto_fix: ai                                        # AI-assisted, needs review
+    file_patterns:
+      - "src/**/*.py"
+
+  - name: Decision
+    target: class
+    auto_fix: ai
+    file_patterns:
+      - "src/**/*.py"
+
+  - name: Glossary
+    target: class
+    auto_fix: no                                        # explicit opt-out (default)
     file_patterns:
       - "src/**/*.py"
 ```
 
-#### 4.3.3 Auto-Fix Output
+#### 4.3.4 AI Provider Configuration
+
+When any type uses `auto_fix: ai`, an AI provider must be configured:
+
+```yaml
+auto_fix_ai:
+  provider: copilot         # 'copilot', 'claude', 'openai', 'custom'
+  model: gpt-4o             # model identifier (provider-specific)
+  max_tokens: 512           # max tokens per annotation generation
+  temperature: 0.2          # low temperature for more predictable output
+  review_required: true     # require human review before applying (recommended)
+```
+
+When `review_required: true` (the default), AI-generated fixes are written to
+a **review file** (`auto_fix_review.json`) instead of applied directly. The
+developer reviews and accepts/rejects each suggestion.
+
+> **No AI provider configured?** Types with `auto_fix: ai` are silently skipped
+> during auto-fix runs, and a `::warning` is emitted listing the skipped types.
+
+#### 4.3.5 Auto-Fix Output
 
 | Output | Description |
 |---|---|
 | **Dry-run report** | List of files, lines, and proposed insertions (always produced) |
-| **Modified files** | Actual file modifications (only when `dry-run: false`) |
-| **`$GITHUB_STEP_SUMMARY`** | Summary of fixes applied / proposed |
-| **Git diff** | When `dry-run: false`, produces a `git diff` of all changes |
+| **Modified files** | Actual file modifications (only when `dry-run: false` and `auto_fix: deterministic`) |
+| **Review file** | `auto_fix_review.json` — AI-generated suggestions for human review (when `auto_fix: ai` and `review_required: true`) |
+| **`$GITHUB_STEP_SUMMARY`** | Summary of fixes applied / proposed / awaiting review |
+| **Git diff** | When `dry-run: false`, produces a `git diff` of all deterministic changes |
 
-#### 4.3.4 Auto-Fix Exit Codes
+#### 4.3.6 Auto-Fix Exit Codes
 
 | Exit Code | Meaning |
 |---|---|
@@ -278,8 +325,8 @@ Each file defines its own `annotation_prefix`. The prefix is **automatically pre
 | `target_document` | `string` | no | The intended downstream document this annotation feeds (e.g., `Technical Design`, `Test Report`, `API Reference`) |
 | `audience` | `enum` | no | Primary audience: `technical`, `business`, `qa`, `architecture`, `operations`, `security` |
 | `pattern` | `string` (regex) | no | **Override** — custom regex if the auto-generated pattern is insufficient |
-| `auto_fix` | `boolean` | no | Whether the auto-fix regime can insert this annotation automatically (default: `false`) |
-| `auto_fix_template` | `string` | no | Template for auto-generated annotation value. Supports tokens: `{class_name}`, `{file_name}`, `{module_name}` |
+| `auto_fix` | `enum` | no | Auto-fix mode: `no` (default), `deterministic` (template-based), `ai` (AI-assisted, non-deterministic) |
+| `auto_fix_template` | `string` | no | Template for `deterministic` auto-fix. Supports tokens: `{class_name}`, `{file_name}`, `{module_name}`. Ignored when `auto_fix` is `no` or `ai`. |
 
 ### 5.3 Annotation Placement — Inside vs. Outside the Object
 
@@ -2556,7 +2603,7 @@ open htmlcov/index.html
 | Augmentation Catalogue | A collection of pre-defined augmentation type definitions for common IT project documentation needs |
 | Augmentation Type | A defined category of annotation (e.g., Feature, AC, TestEvidence) with rules for placement and extraction |
 | Augmentor | The regime that validates annotations conform to defined rules |
-| Auto-Fix | An experimental regime (§4.3) that inserts missing annotations for types with deterministic derivation templates |
+| Auto-Fix | A regime (§4.3) that inserts missing annotations. Mode `deterministic` uses templates; mode `ai` uses an AI provider for non-deterministic generation with human review |
 | Auto-Prefix | When a config file sets `prefix`, the tag `@LivDoc:<Prefix><Name>` is derived automatically — no need to repeat the prefix in each type's `name` |
 | Chat Participant | A VS Code extension that registers a custom `@` mention in an AI assistant chat for domain-specific assistance |
 | Collector | The regime that extracts all annotations into structured JSON |
@@ -2565,7 +2612,7 @@ open htmlcov/index.html
 | Decision (annotation) | A `@LivDoc:*Decision` annotation capturing a technology, library, or business decision close to the code it affects |
 | Detection Strategy | A pluggable algorithm for finding annotations in source code |
 | Domain Object | A `@LivDoc:DomainObject` annotation documenting an entity, aggregate, or value object from the domain model |
-| Dry-Run | A mode where auto-fix reports proposed changes without modifying files (the default for auto-fix) |
+| Dry-Run | A mode where auto-fix reports proposed changes (both `deterministic` and `ai`) without modifying files — the default for auto-fix |
 | Glossary (annotation) | A `@LivDoc:Glossary` annotation defining a term in the project's ubiquitous language |
 | Ignore Rule | A `@LivDoc:Ignore` or `@LivDoc:Ignore(<Type>)` annotation that suppresses augmentor violations for a file, class, or function |
 | AI Assistant Instructions | A `.github/copilot-instructions.md` file that provides project-specific context to AI coding assistants |
