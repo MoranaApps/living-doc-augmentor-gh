@@ -83,31 +83,31 @@ The action operates in two distinct regimes (plus an experimental third):
 ## 3. Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                GitHub Action (composite)                 │
-│                                                         │
-│  ┌──────────────┐   ┌───────────────────────────────┐   │
-│  │  action.yml   │───▶│ main.py (Python 3.14 entry)  │   │
-│  └──────────────┘   └──────────┬────────────────────┘   │
-│                                │                        │
-│                  ┌─────────────┴────────────┐           │
-│                  ▼                          ▼           │
-│         ┌──────────────┐          ┌──────────────┐      │
-│         │  Augmentor   │          │  Collector   │      │
-│         │   Regime     │          │   Regime     │      │
-│         └──────┬───────┘          └──────┬───────┘      │
-│                │                         │              │
-│    ┌───────────┴──────────┐              │              │
-│    ▼                      ▼              ▼              │
-│ ┌──────────┐  ┌────────────┐  ┌──────────────────┐      │
-│ │ PR Mode  │  │ Full Scan  │  │ JSON Extractor   │      │
-│ │  (diff)  │  │(repo-wide) │  │ (aggregate all)  │      │
-│ └──────────┘  └────────────┘  └──────────────────┘      │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐    │
-│  │   augmentation_types.yml (user-defined rules)   │    │
-│  └─────────────────────────────────────────────────┘    │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                   GitHub Action (composite)                      │
+│                                                                  │
+│  ┌──────────────┐   ┌───────────────────────────────┐            │
+│  │  action.yml   │───▶│ main.py (Python 3.14 entry)  │            │
+│  └──────────────┘   └──────────┬────────────────────┘            │
+│                                │                                 │
+│            ┌───────────────────┼───────────────────┐             │
+│            ▼                   ▼                   ▼             │
+│   ┌──────────────┐    ┌──────────────┐    ┌──────────────┐       │
+│   │  Augmentor   │    │  Collector   │    │  Auto-Fix    │       │
+│   │   Regime     │    │   Regime     │    │   Regime     │       │
+│   └──────┬───────┘    └──────┬───────┘    └──────┬───────┘       │
+│          │                   │                   │               │
+│  ┌───────┴────────┐          │           ┌───────┴────────┐      │
+│  ▼                ▼          ▼           ▼                ▼      │
+│ ┌────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐  │
+│ │PR Mode │ │Full Scan │ │  JSON    │ │Determin- │ │   AI     │  │
+│ │ (diff) │ │(repo)    │ │Extractor │ │istic Fix │ │ Provider │  │
+│ └────────┘ └──────────┘ └──────────┘ └──────────┘ └──────────┘  │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │      augmentation_types.yml (user-defined rules)         │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 
@@ -120,6 +120,9 @@ The action operates in two distinct regimes (plus an experimental third):
 | `living_doc_augmentor/augmentor.py` | Augmentor regime — validates annotations against defined types and rules |
 | `living_doc_augmentor/collector.py` | Collector regime — extracts all annotations into structured JSON |
 | `living_doc_augmentor/scanner.py` | Core scanning engine — file traversal, pattern matching, annotation extraction |
+| `living_doc_augmentor/auto_fix.py` | Auto-fix regime — orchestrates deterministic and AI-assisted annotation insertion |
+| `living_doc_augmentor/ai_provider.py` | AI provider abstraction — adapter for Copilot, Claude, OpenAI, custom providers |
+| `living_doc_augmentor/review.py` | Review file generator — produces `auto_fix_review.json` for AI-generated suggestions |
 | `living_doc_augmentor/config.py` | Configuration loader — reads `augmentation_types.yml` and action inputs |
 | `living_doc_augmentor/models.py` | Data models for augmentation types, annotations, scan results |
 | `augmentation_types.yml` | User-supplied configuration defining annotation types and placement rules |
@@ -216,7 +219,7 @@ The `auto_fix` property on each augmentation type is an **enum**, not a boolean:
 | `deterministic` | `ModuleDescription` | `@LivDoc:ModuleDescription(name=...)` | Use module docstring first line |
 | `deterministic` | `Tier` | `@LivDoc:Tier(tier-3)` | Default tier from config |
 | `ai` | `AC` | `@LivDoc:AC(AC-ORD-001[a: ..., b: ...])` | AI infers sub-criteria from method body |
-| `ai` | `Decision` | `@LivDoc:Decision(type=technology, ...)` | AI infers rationale from code context |
+| `ai` | `TechDecision` | `@LivDoc:TechDecision(id=TECH-012, ...)` | AI infers rationale from code context |
 | `ai` | `Glossary` | `@LivDoc:Glossary(term=Order, definition=...)` | AI generates definition from class docstring |
 | `ai` | `TestEvidence` | `@LivDoc:TestEvidence(REQ-ORD-001)` | AI maps test to requirement based on naming/assertions |
 | `no` | _any_ | — | No auto-fix — manual annotation only |
@@ -240,9 +243,10 @@ types:
     file_patterns:
       - "src/**/*.py"
 
-  - name: Decision
+  - name: TechDecision
     target: class
     auto_fix: ai
+    multiline: true
     file_patterns:
       - "src/**/*.py"
 
@@ -255,9 +259,12 @@ types:
 
 #### 4.3.4 AI Provider Configuration
 
-When any type uses `auto_fix: ai`, an AI provider must be configured:
+When any type uses `auto_fix: ai`, an AI provider must be configured in the
+same `augmentation_types.yml` file (or any loaded config file) under the
+top-level `auto_fix_ai` key:
 
 ```yaml
+# Inside augmentation_types.yml (top-level, alongside `types:`)
 auto_fix_ai:
   provider: copilot         # 'copilot', 'claude', 'openai', 'custom'
   model: gpt-4o             # model identifier (provider-specific)
@@ -291,6 +298,12 @@ developer reviews and accepts/rejects each suggestion.
 | `1` | Dry-run: fixable violations found (report produced); Apply: some fixes failed |
 | `2` | Configuration error |
 
+> **Edge case — no fixable types.** When `regime: auto-fix` is used but **no**
+> augmentation types have `auto_fix` set to `deterministic` or `ai`, the action
+> exits with code `0` (nothing to fix) and emits a `::notice` explaining that
+> no types are configured for auto-fix. If `dry-run: true` (default), the
+> dry-run report will be empty. This is not considered an error.
+
 ---
 
 ## 5. Augmentation Type System
@@ -314,12 +327,14 @@ Each file defines its own `annotation_prefix`. The prefix is **automatically pre
 | `target` | `string` | yes | Where the annotation must appear. Built-in values: `function`, `class`, `module`, `method`, `any`. **Custom targets** can be defined in the `languages` section (see §6). |
 | `required` | `boolean` | no | Whether the annotation is mandatory for matching targets (default: `false`) |
 | `file_patterns` | `list[string]` | yes | Glob patterns for files where this type applies |
+| `exclude_patterns` | `list[string]` | no | Glob patterns to exclude from scanning for this type (negation globs). Overrides `file_patterns`. |
 | `description` | `string` | no | Human-readable description |
 | `extraction_rules` | `object` | no | Rules for extracting structured data from the annotation body |
 | `severity` | `enum` | no | Violation severity when missing: `error`, `warning`, `info` (default: `error`) |
 | `multi_value` | `boolean` | no | Whether the annotation accepts multiple values (default: `false`). See §5.5 for format options. |
 | `sub_values` | `object` | no | Defines named sub-criteria within a value (e.g., AC sub-items `a`, `b`, `c`). See §5.5. |
 | `value_format` | `enum` | no | Value syntax: `csv` (default), `pipe`, `repeated`, `group`. See §5.8. |
+| `group_members` | `list[string]` | no | When `value_format: group`, the list of type names that this group expands into. Required when `value_format` is `group`. See §5.8. |
 | `multiline` | `boolean` | no | Whether the annotation body can span multiple lines (default: `false`). See §5.6. |
 | `deprecated` | `boolean` | no | Mark as deprecated — still collected but violations become warnings (default: `false`) |
 | `target_document` | `string` | no | The intended downstream document this annotation feeds (e.g., `Technical Design`, `Test Report`, `API Reference`) |
@@ -427,8 +442,8 @@ The parser rule: **if a value is wrapped in `"…"`, the content is taken verbat
 ```python
 class OrderService:
     """
-    @LivDoc:Decision(
-        type=technology,
+    @LivDoc:TechDecision(
+        id=TECH-005,
         title=Use PostgreSQL for order storage,
         rationale=ACID compliance required for financial transactions,
         alternatives="RabbitMQ, AWS SQS, Azure Service Bus",
@@ -489,15 +504,15 @@ types:
     target_document: "Test Traceability Matrix"
     audience: qa
 
-  - name: Decision
+  - name: TechDecision
     target: class
     required: false
     multiline: true
     file_patterns:
       - "src/**/*.py"
       - "src/**/*.ts"
-    description: "Records a technology, library, or business decision in-place."
-    target_document: "Decision Log"
+    description: "Records a technology choice with rationale, alternatives, and status."
+    target_document: "Technology Decision Log"
     audience: architecture
 
   - name: Glossary
@@ -792,6 +807,22 @@ languages:
       job_entry: '^\s*def\s+(main|run|process)\s*\('
 ```
 
+#### Language Inheritance (`inherits`)
+
+A language definition can set `inherits: <other-language>` to copy all properties
+(`extensions`, `comment_styles`, `targets`) from the parent language, then
+selectively override individual fields. Rules:
+
+| Behavior | Detail |
+|---|---|
+| **Copied** | All parent `comment_styles` and `targets` entries not redefined by the child |
+| **Overridden** | Child entries with the same key replace the parent entry |
+| **Added** | Child entries with new keys are appended |
+| **`extensions`** | Always fully replaced — the child must declare its own extensions |
+| **Depth** | Single-level only — chained inheritance (`A → B → C`) is not supported |
+
+This allows concise definitions for dialects (e.g., AWS Glue jobs are Python with extra targets).
+
 > **Extensibility guarantee:** The `target` field is a free-form string matched against the `languages.<lang>.targets` map. Adding a new target requires only a new entry in the YAML — no code changes.
 
 #### Layer 3 — Comment Style Awareness
@@ -966,8 +997,8 @@ case class LineItem(product: Product, quantity: Int)
 ```hcl
 # @LivDoc:Feature(INFRA-VPC-001)
 # @LivDoc:Owner(team-platform)
-# @LivDoc:Decision(
-#   type=technology,
+# @LivDoc:TechDecision(
+#   id=TECH-INFRA-001,
 #   title=Use AWS VPC with private subnets,
 #   rationale=Security requirement for PCI-DSS compliance,
 #   date=2026-01-10,
@@ -1018,8 +1049,8 @@ ETL job: Transform raw orders into analytics-ready format.
 @LivDoc:Feature(ANALYTICS-001)
 @LivDoc:Owner(team-data)
 @LivDoc:Tier(tier-2)
-@LivDoc:Decision(
-    type=technology,
+@LivDoc:TechDecision(
+    id=TECH-DATA-001,
     title=Use Glue Spark for order ETL,
     rationale=Native AWS integration with S3 and Redshift,
     date=2026-02-01,
@@ -1037,11 +1068,11 @@ When `multiline: true` is set on a type, the annotation body spans from `(` to `
 ```python
 class PaymentProcessor:
     """
-    @LivDoc:Decision(
-        type=library,
-        title=Use Stripe SDK for payment processing,
+    @LivDoc:LibDecision(
+        id=LIB-001,
+        library=Stripe SDK,
+        version=latest,
         rationale=Best-in-class API reliability and PCI compliance,
-        alternatives="Adyen, Braintree",
         date=2026-01-20,
         status=accepted
     )
@@ -1057,10 +1088,11 @@ class PaymentProcessor:
 
 ```typescript
 /**
- * @LivDoc:Decision(
- *   type=business,
+ * @LivDoc:BusinessDecision(
+ *   id=BIZ-003,
  *   title=Support only EUR and USD currencies,
  *   rationale=Initial market scope limited to EU and US,
+ *   stakeholder=Product Management,
  *   date=2026-02-01,
  *   status=accepted
  * )
@@ -1122,6 +1154,7 @@ class OrderService:
 | **PageObject** | `@LivDoc:PageObject(name)` | `class` | Page Object Catalogue / BDD Keyword Reference | QA | Marks a class as a UI page object — see BDD keyword catalogue below |
 | **TestData** | `@LivDoc:TestData(fixture)` | `function` | Test Data Inventory | QA | Documents the test data/fixture a test relies on |
 | **CoverageExclusion** | `@LivDoc:CoverageExclusion(reason)` | `function`, `class` | Coverage Report | QA | Documents why code is excluded from coverage |
+| **BDDKeywords** | `@LivDoc:BDDKeywords(PageObject: action1, action2, ...)` | `module` | BDD Keyword Catalogue | QA | Lists available BDD actions/keywords per page object for Gherkin scenario authoring |
 
 **Example:**
 
@@ -1187,7 +1220,10 @@ The collector extracts this into a structured BDD keyword catalogue — each Pag
 | Type | Tag | Target | Target Document | Audience | Purpose |
 |---|---|---|---|---|---|
 | **ADR** | `@LivDoc:ADR(ID)` | `class`, `module` | Architecture Decision Log | Architecture | Links code to an Architecture Decision Record |
+| **ArchDecision** | `@LivDoc:ArchDecision(ID — title)` | `class`, `module` | Architecture Decision Log | Architecture | Inline architecture decision with rationale (lightweight alternative to multiline `Decision`) |
 | **DesignPattern** | `@LivDoc:DesignPattern(name)` | `class` | Technical Design Document | Technical | Documents the design pattern implemented |
+| **Layer** | `@LivDoc:Layer(name)` | `class`, `module` | Architecture Overview | Architecture | Assigns code to an architectural layer (e.g., `Application`, `Domain`, `Infrastructure`, `Presentation`) |
+| **Component** | `@LivDoc:Component(name)` | `class`, `module` | Component Diagram | Architecture | Assigns code to a logical component within the system architecture |
 | **BoundedContext** | `@LivDoc:BoundedContext(name)` | `module`, `class` | Domain Model Map | Architecture | DDD bounded context assignment |
 | **Aggregate** | `@LivDoc:Aggregate(name)` | `class` | Domain Model | Architecture | Marks an aggregate root in DDD |
 | **DomainEvent** | `@LivDoc:DomainEvent(name)` | `class` | Event Catalogue | Architecture | Marks a domain event class |
@@ -1202,14 +1238,30 @@ class OrderRepository:
     @LivDoc:ADR(ADR-007)
     @LivDoc:DesignPattern(Repository)
     @LivDoc:BoundedContext(OrderManagement)
+    @LivDoc:Layer(Infrastructure)
+    @LivDoc:Component(OrderPersistence)
     """
     ...
+```
+
+```java
+/**
+ * @LivDoc:Layer(Application)
+ * @LivDoc:Component(OrderProcessing)
+ * @LivDoc:ArchDecision(ADR-007 — Use event sourcing for order state)
+ */
+public class OrderCommandHandler {
+    // ...
+}
 ```
 
 ### 8.4 API & Contract Documentation
 
 | Type | Tag | Target | Target Document | Audience | Purpose |
 |---|---|---|---|---|---|
+| **Endpoint** | `@LivDoc:Endpoint(METHOD /path)` | `function`, `endpoint` | API Reference | Technical | Documents a REST/GraphQL endpoint with its HTTP method and path |
+| **Contract** | `@LivDoc:Contract(name)` | `function`, `class` | API Contract Catalogue | Technical | Links code to a response/request contract or DTO schema |
+| **DataModel** | `@LivDoc:DataModel(name)` | `class` | Data Model Inventory | Technical | Documents a data transfer object, view model, or serialisation schema |
 | **APIContract** | `@LivDoc:APIContract(ID)` | `endpoint`, `function` | API Reference | Technical | Links an endpoint to its API contract / OpenAPI operationId |
 | **APIVersion** | `@LivDoc:APIVersion(version)` | `class`, `module` | API Version Matrix | Technical | Documents the API version a component belongs to |
 | **EventSchema** | `@LivDoc:EventSchema(ID)` | `class` | Event Schema Registry | Architecture | Links a class to an async event schema (Kafka, RabbitMQ) |
@@ -1223,6 +1275,9 @@ async def create_order(request: CreateOrderRequest) -> OrderResponse:
     """
     Create a new order.
 
+    @LivDoc:Endpoint(POST /api/v2/orders)
+    @LivDoc:Contract(OrderResponseV2)
+    @LivDoc:DataModel(CreateOrderRequest)
     @LivDoc:APIContract(POST-orders-v2)
     @LivDoc:APIVersion(v2)
     @LivDoc:AC(AC-ORD-001)
@@ -1237,7 +1292,9 @@ async def create_order(request: CreateOrderRequest) -> OrderResponse:
 | **Owner** | `@LivDoc:Owner(team)` | `module`, `class` | Service Ownership Map | Operations | Assigns code ownership to a team |
 | **SLA** | `@LivDoc:SLA(metric, target)` | `function`, `endpoint` | SLA Dashboard | Operations | Documents SLA expectations (latency, uptime) |
 | **Runbook** | `@LivDoc:Runbook(URL)` | `class`, `module` | Runbook Index | Operations | Links to the operational runbook |
-| **AlertRule** | `@LivDoc:AlertRule(ID)` | `function` | Alert Catalogue | Operations | Links to a monitoring alert rule |
+| **Alert** | `@LivDoc:Alert(condition)` | `any` | Alert Catalogue | Operations | Documents a monitoring alert rule or threshold inline |
+| **AlertRule** | `@LivDoc:AlertRule(ID)` | `function` | Alert Catalogue | Operations | Links to a monitoring alert rule by ID |
+| **Stakeholder** | `@LivDoc:Stakeholder(name, ...)` | `class`, `module` | Stakeholder Map | Operations | Lists stakeholders interested in or responsible for this component |
 | **Tier** | `@LivDoc:Tier(level)` | `module`, `class` | Service Tier Map | Operations | Service criticality tier |
 
 **Example:**
@@ -1292,6 +1349,8 @@ def get_user_legacy(user_id: int) -> dict:
 | **SecurityControl** | `@LivDoc:SecurityControl(ID)` | `class`, `function` | Security Controls Matrix | Security | Maps to a security control (OWASP, SOC2) |
 | **DataClassification** | `@LivDoc:DataClassification(level)` | `class`, `module` | Data Classification Inventory | Security | Data sensitivity level |
 | **ComplianceRule** | `@LivDoc:ComplianceRule(ID)` | `any` | Compliance Report | Security | Links to compliance requirement (GDPR, HIPAA, PCI-DSS) |
+| **Regulation** | `@LivDoc:Regulation(standard §clause)` | `class`, `function` | Regulatory Compliance Matrix | Security | Links code to a specific regulatory standard and clause (e.g., `PCI-DSS v4.0 §6.2`) |
+| **AuditControl** | `@LivDoc:AuditControl(ID — description)` | `class`, `function` | Audit Controls Report | Security | Documents an internal audit control with its rationale |
 | **ThreatModel** | `@LivDoc:ThreatModel(ID)` | `class`, `module` | Threat Model | Security | Links to a threat model entry |
 
 **Example:**
@@ -1349,28 +1408,52 @@ class LoginSteps:
 
 ### 8.9 Decisions (Technology, Library, Business)
 
+Decisions are first-class annotations that record **why** a choice was made, directly at the code it affects. Three specialised types replace the need for a single generic `Decision` type, making filtering and reporting easier:
+
 | Type | Tag | Target | Target Document | Audience | Purpose |
 |---|---|---|---|---|---|
-| **Decision** | `@LivDoc:Decision(type, title, ...)` | `class`, `module` | Decision Log | Architecture | Records a technology, library, or business decision in-place (multiline) |
-| **TechChoice** | `@LivDoc:TechChoice(technology)` | `class`, `module` | Technology Radar | Architecture | Quick tag for a technology choice without full decision context |
+| **TechDecision** | `@LivDoc:TechDecision(ID, title, rationale, alternatives, date, status)` | `class`, `module` | Technology Decision Log | Architecture | Records a technology choice (framework, database, protocol) with rationale (multiline) |
+| **LibDecision** | `@LivDoc:LibDecision(ID, library, version, rationale, date, status)` | `class`, `module` | Library Decision Log | Technical | Records a library/SDK selection decision with version and rationale (multiline) |
+| **BusinessDecision** | `@LivDoc:BusinessDecision(ID, title, rationale, stakeholder, date, status)` | `class`, `module` | Business Decision Log | Business | Records a business rule or policy decision affecting the code (multiline) |
+| **TechChoice** | `@LivDoc:TechChoice(technology)` | `class`, `module` | Technology Radar | Architecture | Quick single-line tag for a technology in use — lightweight alternative when full decision context is not needed |
 
 **Example:**
 
 ```python
 class EventBus:
     """
-    @LivDoc:Decision(
-        type=technology,
-        title=Use Apache Kafka for event streaming,
-        rationale=High throughput and exactly-once semantics required for order events,
-        alternatives="RabbitMQ, AWS SQS",
+    @LivDoc:TechDecision(
+        id=TECH-012,
+        title=Use RabbitMQ for event streaming,
+        rationale=Lower operational complexity than Kafka for current throughput needs,
+        alternatives="Apache Kafka, AWS SQS, Azure Service Bus",
         date=2026-01-15,
         status=accepted
     )
-    @LivDoc:TechChoice(Apache Kafka)
+    @LivDoc:LibDecision(
+        id=LIB-005,
+        library=pika,
+        version=1.3,
+        rationale=Mature AMQP client with async support,
+        date=2026-01-16,
+        status=accepted
+    )
+    @LivDoc:TechChoice(RabbitMQ)
     """
     ...
 ```
+
+```scala
+/** @LivDoc:BusinessDecision(
+  *   id=BIZ-009,
+  *   title=Free tier limited to 1000 events per month,
+  *   rationale=Balance acquisition cost with infrastructure spend,
+  *   stakeholder=Product Management,
+  *   date=2026-02-01,
+  *   status=accepted
+  * )
+  */
+object PricingPolicy
 ```
 
 ### 8.10 Glossary & Domain Terms
@@ -1445,22 +1528,61 @@ class Money:
 ...
 ```
 
-### 8.13 Summary — Full Catalogue
+### 8.13 Dependencies & External Systems
+
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **ExternalSystem** | `@LivDoc:ExternalSystem(name version)` | `class`, `module` | External System Inventory | Technical | Documents an external system dependency (API, service, platform) |
+| **Library** | `@LivDoc:Library(name version)` | `module`, `class` | Dependency Inventory | Technical | Documents a critical library dependency with its version |
+| **Migration** | `@LivDoc:Migration(ID)` | `function` | Migration Log | Technical | Links code to a database or schema migration script |
+
+**Example:**
+
+```python
+# @LivDoc:ExternalSystem(Stripe API v2023-10-16)
+# @LivDoc:Library(stripe-python 7.1.0)
+import stripe
+
+# @LivDoc:Migration(V3__add_payment_method_column)
+def upgrade():
+    op.add_column("users", sa.Column("payment_method", sa.String()))
+```
+
+### 8.14 Process & Workflow
+
+| Type | Tag | Target | Target Document | Audience | Purpose |
+|---|---|---|---|---|---|
+| **Workflow** | `@LivDoc:Workflow(name)` | `class`, `module` | Workflow Catalogue | Business | Documents a business or technical workflow/process that this code orchestrates |
+
+**Example:**
+
+```typescript
+/**
+ * @LivDoc:Workflow(OnboardNewClient)
+ * @LivDoc:SLA(Client onboarding < 48h)
+ * @LivDoc:Stakeholder(Legal, Compliance, Sales)
+ */
+export class ClientOnboardingOrchestrator { /* ... */ }
+```
+
+### 8.15 Summary — Full Catalogue
 
 | Category | Types | Primary Audience |
 |---|---|---|
 | Requirements & Traceability | `Feature`, `UserStory`, `Requirement`, `AC`, `Epic` | Business |
-| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `TestData`, `CoverageExclusion` | QA |
-| Architecture & Design | `ADR`, `DesignPattern`, `BoundedContext`, `Aggregate`, `DomainEvent` | Architecture |
-| API & Contracts | `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType` | Technical |
-| Ownership & Operations | `Owner`, `SLA`, `Runbook`, `AlertRule`, `Tier` | Operations |
+| Testing & Quality Evidence | `TestEvidence`, `TestCategory`, `PageObject`, `TestData`, `CoverageExclusion`, `BDDKeywords` | QA |
+| Architecture & Design | `ADR`, `ArchDecision`, `DesignPattern`, `Layer`, `Component`, `BoundedContext`, `Aggregate`, `DomainEvent` | Architecture |
+| API & Contracts | `Endpoint`, `Contract`, `DataModel`, `APIContract`, `APIVersion`, `EventSchema`, `GraphQLType` | Technical |
+| Ownership & Operations | `Owner`, `SLA`, `Runbook`, `Alert`, `AlertRule`, `Stakeholder`, `Tier` | Operations |
 | Lifecycle & Deprecation | `Deprecated`, `Since`, `PlannedRemoval`, `MigrationGuide` | Technical |
-| Security & Compliance | `SecurityControl`, `DataClassification`, `ComplianceRule`, `ThreatModel` | Security |
+| Security & Compliance | `SecurityControl`, `DataClassification`, `ComplianceRule`, `Regulation`, `AuditControl`, `ThreatModel` | Security |
 | Living Documentation | `GherkinScenario`, `GherkinFeature`, `BDDStep`, `SpecFlowBinding` | QA |
-| Decisions | `Decision`, `TechChoice` | Architecture |
+| Decisions | `TechDecision`, `LibDecision`, `BusinessDecision`, `TechChoice` | Architecture |
 | Glossary & Domain Terms | `Glossary` | Business |
 | Domain Objects | `DomainObject`, `ValueObject`, `DomainService` | Architecture |
 | Project Descriptions | `ProjectDescription`, `ModuleDescription` | Business / Technical |
+| Dependencies & External Systems | `ExternalSystem`, `Library`, `Migration` | Technical |
+| Process & Workflow | `Workflow` | Business |
 
 ---
 
@@ -1486,6 +1608,8 @@ On startup, the action validates:
 - File glob patterns are valid.
 - No duplicate fully-qualified tags across all loaded config files.
 - `annotation_prefix` is present in each config file.
+- If any type uses `auto_fix: ai`, a valid `auto_fix_ai` block is present in at least one config file (see §4.3.4).
+- `auto_fix_ai.provider` is one of the supported values (`copilot`, `claude`, `openai`, `custom`).
 
 Invalid configuration causes exit code `2`.
 
@@ -1601,11 +1725,29 @@ The collector produces `code_augmentations.json` with the following structure:
         "properties": {
           "type": { "type": "string" },
           "tag": { "type": "string" },
-          "value": { "type": "string" },
+          "value": {
+            "oneOf": [
+              { "type": "string" },
+              { "type": "object", "description": "Structured key-value for multiline annotations (e.g., Decision)" },
+              { "type": "array", "items": { "type": "string" }, "description": "Multi-value list (e.g., AC with multiple IDs)" }
+            ]
+          },
+          "sub_values": {
+            "type": "array",
+            "description": "Inner sub-criteria for AC-style annotations",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": { "type": "string", "description": "Sub-value ID: letter (a, b, c) or named (shipping_validation)" },
+                "text": { "type": "string", "description": "Sub-value description" }
+              },
+              "required": ["id", "text"]
+            }
+          },
           "file": { "type": "string" },
           "line": { "type": "integer" },
           "target_name": { "type": "string" },
-          "target_kind": { "type": "string", "enum": ["function", "class", "method", "module"] },
+          "target_kind": { "type": "string", "description": "Code construct kind — built-in (function, class, method, module) or any custom target from the languages config" },
           "extracted_data": { "type": "object" },
           "raw_comment": { "type": "string" }
         },
@@ -1978,6 +2120,9 @@ living-doc-augmentor-gh/
 │   ├── models.py                         # Data models (Pydantic)
 │   ├── diff_parser.py                    # PR diff parsing for PR mode
 │   ├── formatters.py                     # Output formatting (JSON, GitHub annotations)
+│   ├── auto_fix.py                       # Auto-fix regime orchestration
+│   ├── ai_provider.py                    # AI provider abstraction (Copilot, Claude, OpenAI, custom)
+│   ├── review.py                         # Review file generator (auto_fix_review.json)
 │   ├── ignore.py                         # @LivDoc:Ignore logic
 │   ├── location.py                       # Location detection system & matchers
 │   ├── languages.py                      # Language-specific comment/target definitions
@@ -1987,6 +2132,9 @@ living-doc-augmentor-gh/
 │   │   ├── test_augmentor.py             # ← mirrors augmentor.py
 │   │   ├── test_collector.py             # ← mirrors collector.py
 │   │   ├── test_scanner.py               # ← mirrors scanner.py
+│   │   ├── test_auto_fix.py              # ← mirrors auto_fix.py
+│   │   ├── test_ai_provider.py           # ← mirrors ai_provider.py
+│   │   ├── test_review.py                # ← mirrors review.py
 │   │   ├── test_config.py                # ← mirrors config.py
 │   │   ├── test_models.py                # ← mirrors models.py
 │   │   ├── test_ignore.py                # ← mirrors ignore.py
@@ -2416,14 +2564,37 @@ export class ClientOnboardingOrchestrator { /* ... */ }
 class EventBus:
     """Central event bus.
 
-    @LivDoc:TechDecision(TECH-012 — RabbitMQ chosen over Kafka for simplicity)
-    @LivDoc:LibDecision(LIB-005 — pika 1.3 for AMQP connectivity)
+    @LivDoc:TechDecision(
+        id=TECH-012,
+        title=Use RabbitMQ for event streaming,
+        rationale=Lower operational complexity than Kafka for current throughput needs,
+        alternatives="Apache Kafka, AWS SQS, Azure Service Bus",
+        date=2026-01-15,
+        status=accepted
+    )
+    @LivDoc:LibDecision(
+        id=LIB-005,
+        library=pika,
+        version=1.3,
+        rationale=Mature AMQP client with async support,
+        date=2026-01-16,
+        status=accepted
+    )
+    @LivDoc:TechChoice(RabbitMQ)
     """
     ...
 ```
 
 ```scala
-/** @LivDoc:BusinessDecision(BIZ-009 — Free tier limited to 1 000 events/month) */
+/** @LivDoc:BusinessDecision(
+  *   id=BIZ-009,
+  *   title=Free tier limited to 1000 events per month,
+  *   rationale=Balance acquisition cost with infrastructure spend,
+  *   stakeholder=Product Management,
+  *   date=2026-02-01,
+  *   status=accepted
+  * )
+  */
 object PricingPolicy
 ```
 
@@ -2597,6 +2768,7 @@ open htmlcov/index.html
 | Term | Definition |
 |---|---|
 | AC Sub-Value | A named or lettered checkpoint within an `@LivDoc:AC` annotation, e.g., `a: Validate required fields` |
+| AI Provider | A configured AI service (`copilot`, `claude`, `openai`, `custom`) used by the `auto_fix: ai` mode to generate annotation values. Configured via the `auto_fix_ai` block in `augmentation_types.yml` (see §4.3.4) |
 | Annotation | A structured comment/tag in source code following the `@LivDoc:<Type>(value)` convention |
 | Annotation Group | A `group` value format that packs multiple annotation types into a single tag, e.g., `@LivDoc:Trace(Feature=F-1, AC=AC-001)` |
 | Augmentation | The process of enriching source code with structured annotations for living documentation |
@@ -2609,19 +2781,23 @@ open htmlcov/index.html
 | Collector | The regime that extracts all annotations into structured JSON |
 | Cross-Language Parity | The principle that the same logical annotation has equivalent syntax in every supported language |
 | Custom Target | A user-defined code-structure target (regex pattern) extending the built-in target vocabulary |
-| Decision (annotation) | A `@LivDoc:*Decision` annotation capturing a technology, library, or business decision close to the code it affects |
+| Decision (annotation) | A `@LivDoc:*Decision` annotation (e.g., `TechDecision`, `LibDecision`, `BusinessDecision`) capturing a technology, library, or business decision close to the code it affects |
 | Detection Strategy | A pluggable algorithm for finding annotations in source code |
 | Domain Object | A `@LivDoc:DomainObject` annotation documenting an entity, aggregate, or value object from the domain model |
 | Dry-Run | A mode where auto-fix reports proposed changes (both `deterministic` and `ai`) without modifying files — the default for auto-fix |
 | Glossary (annotation) | A `@LivDoc:Glossary` annotation defining a term in the project's ubiquitous language |
+| Group Members | The `group_members` property listing which type names a `group`-format annotation expands into (see §5.8) |
 | Ignore Rule | A `@LivDoc:Ignore` or `@LivDoc:Ignore(<Type>)` annotation that suppresses augmentor violations for a file, class, or function |
+| Inherits (language) | A language definition property that copies `comment_styles` and `targets` from a parent language, allowing selective overrides (see §6.2) |
 | AI Assistant Instructions | A `.github/copilot-instructions.md` file that provides project-specific context to AI coding assistants |
 | Living Documentation | Documentation that is automatically generated or validated from source code artifacts, always reflecting the current state of the system |
 | Location Detection | The multi-layer system that determines where in a codebase to look for annotations (file globs → code targets → comment styles) |
 | Location Matcher | A composable rule that validates whether a specific code location is a valid placement for an annotation |
 | Multi-Config | Support for multiple `augmentation_types.yml` files, each with its own namespace/prefix |
 | Multi-Value | The practice of placing multiple annotations of the same type on a single code element, keeping each documentation fragment close to the code that justifies it |
+| Namespace | The scope created by an `annotation_prefix` in a config file. Types in different namespaces can share the same `name` (e.g., `@QA:Feature` vs `@Arch:Feature`) |
 | Project Description | A `@LivDoc:ProjectDescription` annotation documenting a repository's purpose, scope, and boundaries |
+| Review File | `auto_fix_review.json` — a JSON file containing AI-generated annotation suggestions for human review (produced when `auto_fix: ai` and `review_required: true`) |
 | Scoping Layer | One of the three composable layers in the location detection system: file selection, code structure targets, comment style awareness |
 | Target Document | The downstream document (wiki page, handbook, report) that a particular annotation category feeds into |
 | Value Format | The syntax convention for annotation values: `csv`, `pipe`, `repeated`, or `group` (§5.8) |
