@@ -50,7 +50,6 @@ Language and style
 - Must use logging, not print.
 - Must use lazy % formatting for logs.
 - Must keep imports at top of file.
-- Must include the standard copyright/license header in every code file, including __init__.py.
 - Must use the project first-copyright year.
 
 String formatting

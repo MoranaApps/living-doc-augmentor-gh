@@ -1,0 +1,7 @@
+# Runtime dependencies for living-doc-augmentor-gh
+#
+# Keep this file minimal — only packages required at action runtime.
+# Dev/test dependencies go in requirements-dev.txt.
+
+PyYAML>=6.0.1
+pydantic>=2.5.0

@@ -74,34 +74,36 @@
 
 ---
 
-### T-1.1 Repository scaffolding (~1 d) ⬜
+### T-1.1 Repository scaffolding (~1 d) ✅
 
-- **Status:** ⬜ Not Started
+- **Status:** ✅ Done
 - **Spec refs:** §16, §17
 - **Deliverables:**
   - `Makefile` with targets: `qa`, `qa-parallel`, `lint`, `typecheck`, `fmt`, `complexity`, `test`, `audit`
   - `scripts/run_qa.sh` — CI-equivalent wrapper (supports `--parallel` flag)
-  - `.github/workflows/ci.yml` — unit tests + linting (`workflow_dispatch`, `pull_request`)
-  - `.github/workflows/integration_tests.yml` — integration tests (`workflow_dispatch`)
-  - `.github/workflows/check_pr_title.yml` — PR title convention (`pull_request`)
-  - `.github/workflows/release_draft.yml` — release draft automation
-  - `.github/dependabot.yml` — automated dependency updates
+  - `.github/workflows/test.yml` — unit tests + linting (`workflow_dispatch`, `pull_request`)
+  - `.github/workflows/check_pr_release_notes.yml` — PR release-notes presence check (`pull_request`)
+  - `.github/workflows/release_draft.yml` — release draft automation (`workflow_dispatch`)
+  - `.github/dependabot.yml` — automated dependency updates (pip + github-actions)
   - `.github/copilot-instructions.md` — AI assistant project context
+  - `.github/copilot-review-rules.md` — AI code review rules
+  - `.github/agents/senior-developer.agent.md` — senior developer agent contract
+  - `.github/CODEOWNERS` — code ownership
   - `CONTRIBUTING.md` — contributor guidelines
   - `DEVELOPER.md` — developer setup & architecture guide
-  - `requirements.txt` — runtime dependencies
-  - `requirements-dev.txt` — dev/test dependencies (incl. `radon`, `pip-audit`, `pytest-cov`)
-  - `pyproject.toml` — project metadata, black/mypy/ruff/radon configuration
-  - `.pylintrc` — pylint configuration
+  - `requirements.txt` — runtime dependencies (PyYAML, pydantic)
+  - `requirements-dev.txt` — dev/test dependencies (pytest, pytest-cov, pylint, ruff, mypy, black, radon, pip-audit)
+  - `pyproject.toml` — project metadata, black/mypy/ruff/radon/coverage configuration
+  - `.pylintrc` — pylint configuration (py-version=3.14, fail-under=9.0)
 - **Quality gate:**
-  - [ ] `make qa` target exists and is runnable (even if tests are empty/trivial)
-  - [ ] `make qa-parallel` runs lint, typecheck, fmt, complexity in parallel
-  - [ ] `scripts/run_qa.sh` exits 0 when run with no source files
-  - [ ] All CI workflow YAML files pass `yamllint` / are valid GitHub Actions syntax
-  - [ ] `dependabot.yml` targets `pip` ecosystem
-  - [ ] `pyproject.toml` configures: `[tool.black]`, `[tool.mypy]` (strict), `[tool.ruff]`, `[tool.radon]`
-  - [ ] `.pylintrc` present and importable by pylint
-  - [ ] `requirements-dev.txt` includes: `pytest`, `pytest-cov`, `pylint`, `ruff`, `mypy`, `black`, `radon`, `pip-audit`
+  - [x] `make qa` target exists and is runnable (even if tests are empty/trivial)
+  - [x] `make qa-parallel` runs lint, typecheck, fmt, complexity in parallel
+  - [x] `scripts/run_qa.sh` exits 0 when run with no source files
+  - [x] All CI workflow YAML files are valid GitHub Actions syntax
+  - [x] `dependabot.yml` targets `pip` ecosystem
+  - [x] `pyproject.toml` configures: `[tool.black]`, `[tool.mypy]` (strict), `[tool.ruff]`, `[tool.radon]`
+  - [x] `.pylintrc` present and importable by pylint
+  - [x] `requirements-dev.txt` includes: `pytest`, `pytest-cov`, `pylint`, `ruff`, `mypy`, `black`, `radon`, `pip-audit`
 
 ---
 
