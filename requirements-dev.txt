@@ -19,7 +19,7 @@ mypy>=1.10.0
 black>=24.0.0
 
 # Complexity
-radon>=6.0.0
+radon>=6.0.1
 
 # Security audit
 pip-audit>=2.7.0
